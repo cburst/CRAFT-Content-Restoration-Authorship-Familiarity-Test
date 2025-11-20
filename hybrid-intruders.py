@@ -243,7 +243,7 @@ def generate_pdf_for_student(student_id, name, sentences, num_intruders, out_dir
 
     # Two lines of underscores at the bottom
     html_parts.append("<br>")
-    html_parts.append("<div class='text'><b>Sentence Intruders:</b> _____________________________________</div>")
+    html_parts.append("<div class='text'><b>Added Sentences:</b> _______________________________________</div>")
     html_parts.append("<div class='text'><b>Original Sentence Order:</b> ________________________________</div>")
 
     html_parts.append("</body></html>")

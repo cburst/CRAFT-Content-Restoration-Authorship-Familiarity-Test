@@ -43,7 +43,7 @@ ANSWER_KEY_SYNONYM = "answer_key_hybrid_synonyms.tsv"
 FREQ_FILE = "wiki_freq.txt"      # "word count" per line
 
 NUM_SYNONYM_REPLACEMENTS = 5     # how many words you want replaced
-NUM_CANDIDATE_OBSCURE = 10       # how many rare words to consider
+NUM_CANDIDATE_OBSCURE = 20       # how many rare words to consider
 
 NUM_WORDS_TO_REPLACE = NUM_SYNONYM_REPLACEMENTS  # alias
 
