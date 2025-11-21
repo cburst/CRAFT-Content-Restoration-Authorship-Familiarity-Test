@@ -160,23 +160,29 @@ def replace_tokens_with_blanks_in_block(block_text, block_tokens, removed_positi
             # punctuation preserved
             rebuilt.append(part)
 
-    # Reconstruct with spaces where appropriate
-    # To preserve punctuation spacing, we reconstruct manually:
-    out = ""
-    last = ""
-    for piece in rebuilt:
-        if last == "":
-            out += piece
-        else:
-            # Insert space unless previous or current ends/starts with punctuation without needing space
-            if (last.endswith(('.', ',', ';', ':', '!', '?')) or
-                piece.startswith(('.', ',', ';', ':', '!', '?'))):
-                out += piece
-            else:
-                out += " " + piece
-        last = piece
+	# Reconstruct with corrected spacing (fixes missing space after punctuation)
+	out = ""
+	last = ""
+	for piece in rebuilt:
+		if last == "":
+			out += piece
+		else:
+			# If the previous token ends with punctuation → force a space before this token.
+			# Fixes: "controlled,the" → "controlled, the"
+			if last.endswith(('.', ',', ';', ':', '!', '?')):
+				out += " " + piece
 
-    return out
+			# If THIS token *is* punctuation → attach directly to the previous token.
+			elif piece in ".,;:!?":
+				out += piece
+
+			# Otherwise, normal word → word spacing
+			else:
+				out += " " + piece
+
+		last = piece
+
+	return out
 
 
 # -------------------------

@@ -217,10 +217,6 @@ def select_best_window(tokens, window=20):
     return list(range(best_start, best_start + window))
 
 def replace_tokens_with_blanks_in_block(block_text, block_tokens, removed_positions):
-    """
-    Replace ONLY the tokens at `removed_positions` inside block_text.
-    Uses <span style='color:white'>__</span> with length*2 underscores.
-    """
     pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9'\-]*|[.,;:!?]")
     parts = pattern.findall(block_text)
 
@@ -239,14 +235,18 @@ def replace_tokens_with_blanks_in_block(block_text, block_tokens, removed_positi
         else:
             rebuilt.append(part)
 
+    # --- PATCHED SPACING LOGIC ---
     out = ""
     last = ""
     for piece in rebuilt:
         if last == "":
             out += piece
         else:
-            if (last.endswith(('.', ',', ';', ':', '!', '?')) or
-                piece.startswith(('.', ',', ';', ':', '!', '?'))):
+            # If last token ends with punctuation → force a space before the next token.
+            if last.endswith(('.', ',', ';', ':', '!', '?')):
+                out += " " + piece
+            # If piece itself IS punctuation → attach directly.
+            elif piece in ".,;:!?":
                 out += piece
             else:
                 out += " " + piece
