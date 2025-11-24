@@ -215,9 +215,7 @@ def build_augmented_text_with_intruders(text, num_intruders):
 # PDF GENERATION
 # =========================
 
-def generate_pdf_for_student(student_id, name, sentences, num_intruders,
-                             original_order_numbers, out_dir):
-
+def generate_pdf_for_student(student_id, name, sentences, num_intruders, out_dir):
     os.makedirs(out_dir, exist_ok=True)
     safe_name = sanitize_filename(name)
     pdf_path = os.path.join(out_dir, f"{safe_name}.pdf")
@@ -235,45 +233,18 @@ def generate_pdf_for_student(student_id, name, sentences, num_intruders,
         ".text { white-space: pre-wrap; margin: 0.3em 0; }",
         "</style></head><body>",
 
-        f"<div class='header'>Name: {esc_name}<br>"
-        f"Student Number: {esc_id}<br>"
-        f"Sentences Added & Sentence Order</div>",
-
-        (
-            f"<div class='text'><b>{num_intruders} extra {plural} sentences have been "
-            "added to your text.<br>Find the added sentences and provide the correct "
-            "order of the original sentences.</b><br><br></div>"
-        ),
+        f"<div class='header'>Name: {esc_name}<br>Student Number: {esc_id}<br>Sentences Added & Sentence Order</div>",
+        f"<div class='text'><b>{num_intruders} extra {plural} sentences have been added to your text.<br>Find the added sentences and provide the correct order of the original sentences.</b><br><br></div>",
     ]
 
     for i, sent in enumerate(sentences, start=1):
         esc = html.escape(sent)
         html_parts.append(f"<div class='text'><b>{i}.</b> {esc}</div>")
 
+    # Two lines of underscores at the bottom
     html_parts.append("<br>")
-    html_parts.append(
-        "<div class='text'><b>Added Sentences:</b> _______________________________________</div>"
-    )
-
-    # ============================
-    # ORIGINAL SENTENCE ORDER HINT
-    # ============================
-    if original_order_numbers and len(original_order_numbers) >= 4:
-        first_num = original_order_numbers[0]
-        second_num = original_order_numbers[1]
-        second_last_num = original_order_numbers[-2]
-        last_num = original_order_numbers[-1]
-
-        html_parts.append(
-            "<div class='text'><b>Original Sentence Order:</b> "
-            f"{first_num}, {second_num}, "
-            "<span style='border-bottom:1px solid #000; display:inline-block; width:300px;'>&nbsp;</span>, "
-            f"{second_last_num}, {last_num}</div>"
-        )
-    else:
-        html_parts.append(
-            "<div class='text'><b>Original Sentence Order:</b> _________________________________</div>"
-        )
+    html_parts.append("<div class='text'><b>Added Sentences:</b> _______________________________________</div>")
+    html_parts.append("<div class='text'><b>Original Sentence Order:</b> _________________________________</div>")
 
     html_parts.append("</body></html>")
     html_doc = "\n".join(html_parts)
@@ -307,6 +278,7 @@ def process_tsv(input_tsv, output_pdf_dir, answer_key_path):
                     continue
 
                 student_id, name, text = row[0], row[1], row[2]
+
                 print(f"\n=== Processing {student_id} / {name} ===")
 
                 shuffled, intruder_positions, intruders, original_order_numbers = \
@@ -316,13 +288,11 @@ def process_tsv(input_tsv, output_pdf_dir, answer_key_path):
                     print("⚠️ Not enough text; skipping.")
                     continue
 
-                # 🔥 UPDATED CALL — now passes original_order_numbers
                 generate_pdf_for_student(
                     student_id,
                     name,
                     shuffled,
                     len(intruders),
-                    original_order_numbers,     # <-- NEW
                     output_pdf_dir
                 )
 
