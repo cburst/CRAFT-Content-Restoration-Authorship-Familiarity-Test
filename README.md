@@ -1,7 +1,7 @@
 🧾 these python scripts can address text authorship fidelity by examining claimed authors' familiarity and ability to reconstruct text.  
 🧾 each script starts with a students.tsv file that contains student numbers, student names, and text columns.
 
-hybrid tests
+hybrid tests  
 &nbsp;&nbsp;&nbsp;&nbsp;📜 hybrid-intruders.py  
 this script uses an LLM to create additional sentences in the original text sample, and the claimed author should be able to identify the impostor sentences.  
 this script also shuffles sentences in the original text sample, and the claimed author should be able to recorder the original sentences.   
@@ -13,7 +13,7 @@ this script also removes a 10-word block from the original text sample, puts tho
 *requires weasyprint, wiki_freq.txt (included), and a deepseek API key (compatible with other OpenAI format LLM APIs)
 
 
-standalone tests
+standalone tests  
 &nbsp;&nbsp;&nbsp;&nbsp;📜 hybrid-assembler-replacer.py  
 this script removes a 20-word block from the original text sample, puts those words into an alphabetized word bank, and the claimed author should be able to reassemble the original block.   
 *requires weasyprint
