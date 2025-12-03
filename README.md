@@ -3,6 +3,11 @@
 🧾 each script generates student test PDFs and answer key(s).
 
 **hybrid tests**  
+&nbsp;&nbsp;&nbsp;&nbsp;📜 hybrid-intruders-synonym.py  
+this script uses an LLM to create additional sentences in the original text sample, and the claimed author should be able to identify the impostor sentences.  
+this script also identifies the 10 rarest words in each text sample using the wikipedia word frequency list, an LLM replaces 5 of those words in the text sample with synonyms, and the claimed author should be able to find the synonyms and identify the original word choices.   
+*requires weasyprint, nltk, and a deepseek API key (compatible with other OpenAI format LLM APIs)
+
 &nbsp;&nbsp;&nbsp;&nbsp;📜 hybrid-intruders.py  
 this script uses an LLM to create additional sentences in the original text sample, and the claimed author should be able to identify the impostor sentences.  
 this script also shuffles sentences in the original text sample, and the claimed author should be able to recorder the original sentences.   
@@ -53,4 +58,7 @@ this script identifiesuses an LLM to create an accurate summary of the original 
 
 **pipeline script**  
 &nbsp;&nbsp;&nbsp;&nbsp;📜 test_pipeline.py  
-example python pipeline for organizing and merging pdf test files and answer keys created to facilitate the creation of a double-sided single page test for each student
+example python pipeline for organizing and merging human and machine originted pdf test files and answer keys
+
+&nbsp;&nbsp;&nbsp;&nbsp;📜 real_pipeline.py  
+example python pipeline for organizing and merging a single set of pdf test files and answer keys
