@@ -334,6 +334,59 @@ def get_synonym_from_deepseek(surface_word, sentence, all_words_in_text):
     print(f"⚠️ No suitable synonym for '{surface_word}' after retries.")
     return None
 
+def get_pos_from_deepseek(surface_word, sentence):
+    """
+    Ask DeepSeek for the part of speech of a word *as used in the given sentence*.
+    Returns a short POS label like: noun, verb, adjective, adverb, preposition, etc.
+    """
+
+    if not DEEPSEEK_API_KEY:
+        return "?"
+
+    system_prompt = (
+        "You are an expert at identifying the part of speech of English words "
+        "based on their usage in context. Given a sentence and the target word, "
+        "return ONLY the part of speech of the word *as used*, such as "
+        "'noun', 'verb', 'adjective', 'adverb', 'preposition', 'conjunction', etc.\n\n"
+        "Output only the POS label, no punctuation, no commentary."
+    )
+
+    user_prompt = (
+        f"Sentence:\n{sentence}\n\n"
+        f"Target word: {surface_word}\n\n"
+        "What is the part of speech of this word in this sentence?"
+    )
+
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",  "content": user_prompt},
+        ],
+        "max_tokens": 10,
+        "temperature": 0.2,
+    }
+
+    try:
+        resp = requests.post(DEEPSEEK_URL, headers=headers, json=payload, timeout=15)
+
+        if resp.status_code >= 400:
+            print("⚠️ POS HTTP error:", resp.text)
+            return "?"
+
+        data = resp.json()
+        pos_raw = data["choices"][0]["message"]["content"].strip()
+        pos_clean = pos_raw.lower().split()[0]  # take first token, lowercase
+        return pos_clean
+
+    except Exception as e:
+        print("⚠️ POS DeepSeek error:", e)
+        return "?"
 
 def apply_synonym_case_preserving(text, original_lower, synonym):
     """
@@ -365,15 +418,18 @@ def transform_text_with_synonyms(text, freq_ranks):
     1) Find up to NUM_CANDIDATE_OBSCURE rare words.
     2) For each, find a sentence and the surface form of the word.
     3) Ask DeepSeek for a synonym that matches POS + inflection.
-    4) Reject synonyms that:
+    4) Ask DeepSeek for POS of the original word.
+    5) Reject synonyms that:
          - are too similar to the original word
          - OR too similar to ANY other word in the text
          - OR contain capitalization
-    5) Replace up to NUM_WORDS_TO_REPLACE words in the text.
+    6) Replace up to NUM_WORDS_TO_REPLACE words in the text.
 
     Returns:
-      modified_text, replacements_list (list of (original_surface, synonym)).
+      modified_text,
+      replacements_list = list of (original_surface, synonym, pos_label)
     """
+
     all_words = set(tokenize_words_lower(text))
 
     candidate_words = find_obscure_words(
@@ -391,16 +447,26 @@ def transform_text_with_synonyms(text, freq_ranks):
         if not sentence or not surface_word:
             continue
 
+        # --- (A) SYNONYM GENERATION ---
         synonym = get_synonym_from_deepseek(surface_word, sentence, all_words)
         if not synonym:
             continue
 
+        # Ensure the word still exists in text
         pattern = re.compile(r"\b" + re.escape(w_lower) + r"\b", re.IGNORECASE)
         if not pattern.search(modified_text):
             continue
 
+        # --- (B) POS LABELING ---
+        pos_label = get_pos_from_deepseek(surface_word, sentence)
+        if not pos_label:
+            pos_label = "?"
+
+        # --- (C) APPLY REPLACEMENT ---
         modified_text = apply_synonym_case_preserving(modified_text, w_lower, synonym)
-        replacements.append((surface_word, synonym))
+
+        # Store (original_surface, synonym, part_of_speech)
+        replacements.append((surface_word, synonym, pos_label))
 
     return modified_text, replacements
 
@@ -589,7 +655,6 @@ def insert_intruders_into_sentences(sentences):
 
     return augmented, intruder_positions, intruder_texts
 
-
 # ====================================================
 # PDF GENERATION (COMBINED TEST)
 # ====================================================
@@ -598,12 +663,13 @@ def generate_pdf(student_id, name, sentences, replacements, pdf_dir=PDF_DIR):
     """
     Generate a single PDF that contains:
       - Instructions for both tests at the top
-      - ONE unified paragraph:
-            [ 01 ] Sentence. [ 02 ] Sentence. [ 03 ] Sentence. ...
-      - A 5-column table at the bottom:
-            replacements  (blank cells)
-            originals      (first-letter hints)
+      - ONE unified paragraph with numbered sentences
+      - A 3-row table:
+            1) part of speech
+            2) replacements  (blank cells)
+            3) originals     (first-letter hints)
     """
+
     os.makedirs(pdf_dir, exist_ok=True)
     safe_name = sanitize_filename(name)
     pdf_path = os.path.join(pdf_dir, f"{safe_name}.pdf")
@@ -614,8 +680,6 @@ def generate_pdf(student_id, name, sentences, replacements, pdf_dir=PDF_DIR):
     # Build unified paragraph
     unified_paragraph = build_unified_paragraph(sentences)
     esc_paragraph = html.escape(unified_paragraph)
-
-    num_replacements = len(replacements)
 
     html_parts = [
         "<html>",
@@ -636,34 +700,45 @@ def generate_pdf(student_id, name, sentences, replacements, pdf_dir=PDF_DIR):
         f"<div class='header'>Name: {esc_name}<br>Student Number: {esc_number}</div>",
         "<div class='header'>Sentence Intruders & Synonym Replacements</div>",
         "<div class='instructions'>",
-        "<b> Extra sentences have been added. Circle the added sentence numbers.<br>",
+        "<b>Extra sentences have been added. Circle the added sentence numbers.<br>",
         f"Five words have been replaced. Find the replacements and provide the originals.</b>",
         "</div>",
         f"<div class='paragraph'>{esc_paragraph}</div>",
         "<table class='syn-table'>",
     ]
 
-    #
-    # 🔵 ROW 1 — "replacements" with BLANK CELLS (students must find them)
-    #
+    # ======================================================
+    # 🔵 ROW 1 — PART OF SPEECH HINTS
+    # ======================================================
+    html_parts.append("<tr>")
+    html_parts.append("<td class='label-cell'>part of speech</td>")
+    for idx in range(NUM_WORDS_TO_REPLACE):
+        if idx < len(replacements):
+            orig, syn, pos_label = replacements[idx]
+            html_parts.append(f"<td>{html.escape(pos_label)}</td>")
+        else:
+            html_parts.append("<td>&nbsp;</td>")
+    html_parts.append("</tr>")
+
+    # ======================================================
+    # 🔵 ROW 2 — REPLACEMENTS (blank for students)
+    # ======================================================
     html_parts.append("<tr>")
     html_parts.append("<td class='label-cell'>replacements</td>")
     for _ in range(NUM_WORDS_TO_REPLACE):
         html_parts.append("<td>&nbsp;</td>")
     html_parts.append("</tr>")
 
-    #
-    # 🔵 ROW 2 — "originals" with FIRST-LETTER HINTS
-    #
+    # ======================================================
+    # 🔵 ROW 3 — ORIGINAL WORDS (first-letter hints)
+    # ======================================================
     html_parts.append("<tr>")
     html_parts.append("<td class='label-cell'>originals</td>")
     for idx in range(NUM_WORDS_TO_REPLACE):
         if idx < len(replacements):
-            orig, _ = replacements[idx]
-            # first alphabetical character
+            orig, syn, pos_label = replacements[idx]
             first_letter = next((ch.lower() for ch in orig if ch.isalpha()), "")
-            cell_text = html.escape(first_letter)
-            html_parts.append(f"<td>{cell_text}</td>")
+            html_parts.append(f"<td>{html.escape(first_letter)}</td>")
         else:
             html_parts.append("<td>&nbsp;</td>")
     html_parts.append("</tr>")
@@ -675,21 +750,108 @@ def generate_pdf(student_id, name, sentences, replacements, pdf_dir=PDF_DIR):
     HTML(string=html_doc).write_pdf(pdf_path)
     print(f"📄 PDF created: {pdf_path}")
 
-# ====================================================
-# TSV PROCESSOR & MAIN PIPELINE
-# ====================================================
+from rapidfuzz import fuzz
+
+def extract_bracket_sentences(text):
+    """
+    Extract [ nn ] sentences from final hybrid paragraph.
+    Returns list of (num_as_int, sentence_text)
+    """
+    text = re.sub(r"\s+", " ", text)
+    pattern = r"\[\s*([0-9OIl]+)\s*\]\s*(.*?)(?=\[\s*[0-9OIl]+\s*\]|$)"
+
+    out = []
+    for m in re.finditer(pattern, text):
+        raw = m.group(1)
+        cleaned = (
+            raw.replace("O","0")
+               .replace("o","0")
+               .replace("I","1")
+               .replace("l","1")
+        )
+        try:
+            num = int(cleaned)
+        except ValueError:
+            continue
+        sent = m.group(2).strip()
+        out.append((num, sent))
+    return out
+
+
+def get_pdf_intruder_numbers_from_augmented(augmented_sentences, intruder_texts):
+    """
+    Compute PDF intruder numbers from the FINAL sentence list.
+
+    For each intruder_text, find its index in augmented_sentences and
+    return 1-based indices (these correspond to [ nn ] labels).
+
+    Handles possible duplicates by not reusing the same index twice.
+    """
+    pdf_nums = []
+    used_indices = set()
+
+    for intr in intruder_texts:
+        found_idx = None
+        for i, s in enumerate(augmented_sentences):
+            if i in used_indices:
+                continue
+            if s.strip() == intr.strip():
+                found_idx = i
+                break
+        if found_idx is not None:
+            used_indices.add(found_idx)
+            pdf_nums.append(found_idx + 1)  # 1-based for [ nn ]
+    return pdf_nums
+
+
+def detect_intruders_by_fuzz(original_text, hybrid_text, threshold=0.60):
+    """
+    Similarity-based intruder detection over ALL labeled sentences.
+
+    Returns:
+        fuzz_intruder_numbers (list[int])
+        fuzz_intruder_sents   (list[str])
+        fuzz_intruder_scores  (list[float])
+    """
+    orig_sents = split_into_sentences(original_text)
+    hyb_sents = extract_bracket_sentences(hybrid_text)
+
+    fuzz_nums = []
+    fuzz_texts = []
+    fuzz_scores = []
+
+    for num, sent in hyb_sents:
+        best = 0.0
+        for o in orig_sents:
+            score = fuzz.ratio(sent.lower(), o.lower()) / 100
+            if score > best:
+                best = score
+
+        if best < threshold:
+            fuzz_nums.append(num)
+            fuzz_texts.append(sent)
+            fuzz_scores.append(round(best, 3))
+
+    return fuzz_nums, fuzz_texts, fuzz_scores
+
 
 def process_tsv(input_tsv, output_tsv):
     """
-    Final hybrid processor:
-        1. Read (student_id, name, text)
-        2. Apply synonym replacements to ORIGINAL sentences only
-        3. Insert intruders (4 total) into quarter-based sections
-        4. Produce hybrid numbered paragraph PDF
-        5. Write simplified answer key with:
-               student_id, name, intruder_sentence_numbers,
-               replacements (comma-separated),
-               originals (comma-separated)
+    Final hybrid processor with CORRECT intruder numbering.
+
+    Answer key columns:
+
+        student_id
+        name
+        original_text
+        hybrid_text
+        pdf_intruder_numbers      (from actual positions of intruder_texts)
+        fuzz_intruder_numbers     (from RapidFuzz < 0.60 on hybrid text)
+        fuzz_intruder_scores      (best similarity for those fuzz intruders)
+        intruder_sentences        (the inserted intruder texts)
+        replacement_words         (synonyms)
+        original_words            (pre-replacement)
+        pos_labels                (DeepSeek POS)
     """
 
     freq_ranks = load_frequency_ranks(FREQ_FILE)
@@ -697,15 +859,19 @@ def process_tsv(input_tsv, output_tsv):
     with open(output_tsv, "w", newline="", encoding="utf-8") as keyfile:
         writer = csv.writer(keyfile, delimiter="\t")
 
-        # --------------------------
-        # HEADER
-        # --------------------------
+        # ---------- HEADER ----------
         writer.writerow([
             "student_id",
             "name",
-            "intruder_sentence_numbers",
-            "replacements",
-            "originals"
+            "original_text",
+            "hybrid_text",
+            "pdf_intruder_numbers",
+            "fuzz_intruder_numbers",
+            "fuzz_intruder_scores",
+            "intruder_sentences",
+            "replacement_words",
+            "original_words",
+            "pos_labels",
         ])
 
         with open(input_tsv, newline="", encoding="utf-8") as infile:
@@ -716,61 +882,67 @@ def process_tsv(input_tsv, output_tsv):
                     continue
 
                 student_id, name, text = row[0], row[1], row[2]
-
                 print(f"\n=== Processing {student_id} / {name} ===")
 
-                # ------------------------------------------------------------------
-                # 1. SPLIT ORIGINAL SENTENCES
-                # ------------------------------------------------------------------
-                original_sentences = split_into_sentences(text)
-                if not original_sentences:
-                    print("⚠️ No sentences found. Skipping student.")
+                # 1. original sentences
+                orig_sentences = split_into_sentences(text)
+                if not orig_sentences:
+                    print("⚠️ No sentences found. Skipping.")
                     continue
 
-                # ------------------------------------------------------------------
-                # 2. APPLY SYNONYM TRANSFORMATIONS (to original sentences only)
-                # ------------------------------------------------------------------
+                # 2. synonym transformation
                 synonym_modified_text, replacements = transform_text_with_synonyms(
-                    text,
-                    freq_ranks
+                    text, freq_ranks
+                )
+                modified_original_sents = split_into_sentences(synonym_modified_text)
+
+                # 3. insert intruders
+                augmented_sents, intruder_positions, intruder_texts = \
+                    insert_intruders_into_sentences(modified_original_sents)
+
+                # ✅ CORRECT pdf intruder numbers: based on FINAL augmented_sents
+                pdf_intruder_numbers = get_pdf_intruder_numbers_from_augmented(
+                    augmented_sents,
+                    intruder_texts
                 )
 
-                # remake synonym-modified original sentences
-                modified_original_sentences = split_into_sentences(synonym_modified_text)
+                # 4. build unified hybrid paragraph with [ nn ]
+                hybrid_paragraph = build_unified_paragraph(augmented_sents)
 
-                # ------------------------------------------------------------------
-                # 3. INSERT 4 INTRUDERS anywhere inside each quarter (not edges)
-                # ------------------------------------------------------------------
-                augmented_sentences, intruder_positions, intruders = \
-                    insert_intruders_into_sentences(modified_original_sentences)
+                # 5. RapidFuzz-based intruder detection (independent checksum)
+                fuzz_nums, fuzz_sents, fuzz_scores = detect_intruders_by_fuzz(
+                    text,
+                    hybrid_paragraph,
+                    threshold=0.60
+                )
 
-
-                # intruder_positions are 0-based → convert to 1-based numbers
-                intruder_numbers_1based = [i + 1 for i in intruder_positions]
-
-                # ------------------------------------------------------------------
-                # 4. GENERATE PDF (using unified paragraph + blank replacements box)
-                # ------------------------------------------------------------------
+                # 6. generate PDF
                 generate_pdf(
                     student_id=student_id,
                     name=name,
-                    sentences=augmented_sentences,
+                    sentences=augmented_sents,
                     replacements=replacements,
                     pdf_dir=PDF_DIR
                 )
 
-                # ------------------------------------------------------------------
-                # 5. WRITE SIMPLIFIED ANSWER KEY ENTRY
-                # ------------------------------------------------------------------
-                original_words = [orig for (orig, syn) in replacements]
-                replacement_words = [syn for (orig, syn) in replacements]
+                # 7. replacement metadata
+                original_words = [orig for (orig, syn, pos) in replacements]
+                replacement_words = [syn for (orig, syn, pos) in replacements]
+                pos_labels = [pos for (orig, syn, pos) in replacements]
 
+                # 8. write answer key row
                 writer.writerow([
                     student_id,
                     name,
-                    ",".join(str(n) for n in intruder_numbers_1based),
+                    text,
+                    hybrid_paragraph,
+                    ",".join(str(n) for n in pdf_intruder_numbers),
+                    ",".join(str(n) for n in fuzz_nums),
+                    ",".join(str(s) for s in fuzz_scores),
+                    " || ".join(intruder_texts),
                     ",".join(replacement_words),
-                    ",".join(original_words)
+                    ",".join(original_words),
+                    ",".join(pos_labels),
                 ])
 
     print(f"\n🎯 Done. Answer key saved to: {output_tsv}")
