@@ -39,6 +39,7 @@ ANSWER_KEY = "answer_key_hybrid_synonym_intruders.tsv"
 FREQ_FILE = "wiki_freq.txt"  # "word count" per line
 
 NUM_INTRUDERS = 4            # one per quarter
+INTRUDER_SIMILARITY_BASE = 0.6	# Global intruder similarity base threshold
 NUM_WORDS_TO_REPLACE = 5     # target number of synonym replacements
 NUM_CANDIDATE_OBSCURE = 20   # how many rare words to consider for synonym replacement
 MIN_QUARTER_SIZE = 2          # minimum sentences per segment for intruder generation
@@ -237,16 +238,18 @@ def extract_surface_phrases(sentence):
     return phrases
 
 
-def intruder_too_similar(candidate, existing_intruders, threshold=0.75):
+def intruder_too_similar(candidate, existing_intruders, threshold=INTRUDER_SIMILARITY_BASE):
     """
-    Reject candidate ONLY if a content-bearing surface phrase
-    is too similar to a previous intruder.
+    Reject candidate if a content-bearing surface phrase
+    is too similar to a previous sentence.
+
+    Threshold is globally tunable.
     """
 
     cand_phrases = extract_surface_phrases(candidate)
 
     if not cand_phrases:
-        return False  # nothing meaningful to compare
+        return False
 
     for prev in existing_intruders:
         prev_phrases = extract_surface_phrases(prev)
@@ -981,10 +984,11 @@ def transform_text_with_synonyms(text, freq_ranks):
 
 def generate_intruder_sentence(essay_section_sentences, existing_sentences, intruder_index):
     """
-    Robust intruder generator with:
+    Production-stable intruder generator.
 
-      - Progressive relaxation
-      - Strong discourse marker suppression
+    Features:
+      - Progressive relaxation (length, density, similarity)
+      - Discourse marker suppression
       - Best-candidate fallback
       - No hard crash
     """
@@ -996,6 +1000,7 @@ def generate_intruder_sentence(essay_section_sentences, existing_sentences, intr
     # Section statistics
     # --------------------------------------------------
     lengths, densities = [], []
+
     for s in essay_section_sentences:
         tokens = tokenize_words_lower(s)
         if not tokens:
@@ -1007,43 +1012,32 @@ def generate_intruder_sentence(essay_section_sentences, existing_sentences, intr
     avg_len = max(8, int(sum(lengths) / max(1, len(lengths))))
     avg_density = sum(densities) / max(1, len(densities))
 
-    min_len = max(6, int(avg_len * 0.75))
-    max_len = int(avg_len * 1.25)
-    min_density = max(0.0, avg_density - 0.20)
+    # Base constraints (already moderately relaxed)
+    base_min_len = max(6, int(avg_len * 0.6))
+    base_max_len = int(avg_len * 1.4)
+    base_min_density = max(0.0, avg_density - 0.20)
 
     # --------------------------------------------------
-    # Discourse marker suppression
+    # Prompt
     # --------------------------------------------------
-    DISCOURSE_MARKERS = {
-        "furthermore", "moreover", "however", "therefore",
-        "overall", "in conclusion", "in summary",
-        "additionally", "consequently"
-    }
+    system_prompt = (
+        "You are a careful academic writing assistant.\n\n"
+        "Write ONE additional sentence that could plausibly appear in this section.\n"
+        "It must add a specific detail, clarification, example, or implication.\n\n"
+        "Avoid discourse markers such as: however, moreover, furthermore, in conclusion, overall.\n"
+        "Do NOT repeat wording from the section.\n"
+        "The sentence must stand alone grammatically.\n"
+        "Output ONE sentence only."
+    )
 
-    def starts_with_discourse_marker(text):
-        first_words = " ".join(text.lower().split()[:2])
-        for marker in DISCOURSE_MARKERS:
-            if first_words.startswith(marker):
-                return True
-        return False
+    user_prompt = "Essay section:\n" + " ".join(essay_section_sentences)
 
     existing_norms = {normalize_sentence(s) for s in existing_sentences}
 
     best_candidate = None
     best_score = -1
-    MAX_ATTEMPTS = 8
 
-    system_prompt = (
-        "You are a careful academic writing assistant.\n\n"
-        "Write ONE sentence that could plausibly appear in this paragraph section.\n\n"
-        "The sentence must:\n"
-        "- Add a concrete detail, clarification, or implication\n"
-        "- Match the academic level\n"
-        "- Avoid discourse markers (no 'Furthermore', 'However', etc.)\n"
-        "- Stand alone grammatically\n"
-        "- Be original\n\n"
-        "Output ONE sentence only."
-    )
+    MAX_ATTEMPTS = 8
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
 
@@ -1053,19 +1047,27 @@ def generate_intruder_sentence(essay_section_sentences, existing_sentences, intr
         # --------------------------------------------------
         # Progressive relaxation
         # --------------------------------------------------
-        relax = (attempt - 1) / (MAX_ATTEMPTS - 1)
+        relax_factor = (attempt - 1) / (MAX_ATTEMPTS - 1)
 
-        min_len_adj = max(5, int(min_len * (1 - 0.20 * relax)))
-        max_len_adj = int(max_len * (1 + 0.20 * relax))
+        # Length widens up to ±40%
+        len_slack = int(avg_len * 0.40 * relax_factor)
+        min_len = max(5, base_min_len - len_slack)
+        max_len = base_max_len + len_slack
 
-        density_adj = max(0.40, min_density - (0.15 * relax))
-        similarity_threshold = min(0.90, 0.75 + (0.15 * relax))
+        # Density relaxes gradually
+        min_density = max(0.35, base_min_density - (0.20 * relax_factor))
+
+        # Similarity threshold increases (more tolerant)
+        similarity_threshold = min(
+            0.90,
+            INTRUDER_SIMILARITY_BASE + (0.20 * relax_factor)
+        )
 
         try:
             raw = llm_chat(
                 system_prompt=system_prompt,
-                user_prompt="Essay section:\n" + " ".join(essay_section_sentences),
-                temperature=0.70,
+                user_prompt=user_prompt,
+                temperature=0.75,
                 max_tokens=200
             )
 
@@ -1080,18 +1082,24 @@ def generate_intruder_sentence(essay_section_sentences, existing_sentences, intr
             density = content_wc / wc
             norm = normalize_sentence(candidate)
 
-            print(f"📏 Words: {wc} (target {min_len_adj}-{max_len_adj})")
-            print(f"📊 Density: {density:.2f} (min {density_adj:.2f})")
+            print(f"📏 Words: {wc} (target {min_len}-{max_len})")
+            print(f"📊 Density: {density:.2f} (min {min_density:.2f})")
 
             # --------------------------------------------------
-            # Hard reject: discourse marker start
+            # Discourse marker suppression
             # --------------------------------------------------
-            if starts_with_discourse_marker(candidate):
-                print("❌ Rejected — discourse marker start.")
+            first_word = tokens[0].lower()
+            banned_markers = {
+                "however", "moreover", "furthermore",
+                "therefore", "overall", "consequently"
+            }
+
+            if first_word in banned_markers:
+                print("❌ Rejected — discourse marker.")
                 continue
 
             # --------------------------------------------------
-            # Similarity check (single evaluation)
+            # Similarity check
             # --------------------------------------------------
             too_similar = intruder_too_similar(
                 candidate,
@@ -1100,13 +1108,14 @@ def generate_intruder_sentence(essay_section_sentences, existing_sentences, intr
             )
 
             # --------------------------------------------------
-            # Score candidate
+            # Scoring (for fallback)
             # --------------------------------------------------
             length_score = 1 - abs(wc - avg_len) / max(1, avg_len)
             density_score = min(1, density / max(0.0001, avg_density))
             similarity_penalty = 0.5 if too_similar else 0
+            duplicate_penalty = 0.5 if norm in existing_norms else 0
 
-            score = length_score + density_score - similarity_penalty
+            score = length_score + density_score - similarity_penalty - duplicate_penalty
 
             if score > best_score:
                 best_score = score
@@ -1116,12 +1125,12 @@ def generate_intruder_sentence(essay_section_sentences, existing_sentences, intr
             # Acceptance condition
             # --------------------------------------------------
             if (
-                min_len_adj <= wc <= max_len_adj and
-                density >= density_adj and
+                min_len <= wc <= max_len and
+                density >= min_density and
                 norm not in existing_norms and
                 not too_similar
             ):
-                print(f"✅ Accepted intruder (relax {relax:.2f})")
+                print(f"✅ Accepted intruder (relax {relax_factor:.2f})")
                 return candidate
 
             print("❌ Rejected — constraints not met.")
@@ -1130,11 +1139,18 @@ def generate_intruder_sentence(essay_section_sentences, existing_sentences, intr
             print(f"⚠️ Intruder error: {e}")
 
     # --------------------------------------------------
-    # Guaranteed fallback
+    # Best-candidate fallback (controlled, no junk)
     # --------------------------------------------------
     if best_candidate:
-        print("⚠️ Using best imperfect intruder.")
+        print("⚠️ Using best imperfect intruder candidate.")
         return best_candidate
+
+    # If absolutely nothing usable was generated,
+    # raise a clean error so outer logic can retry
+    raise RuntimeError(
+        f"Intruder generation failed for section {intruder_index} "
+        f"after progressive relaxation."
+    )
 
 def get_sentence_embeddings(sentences):
     """
