@@ -87,7 +87,7 @@ def safe_move_pdfs(src_pattern, dst_dir):
 # -------------------------------------------------------------
 # 3. Run hybrid generator (ONE RUN ONLY)
 # -------------------------------------------------------------
-log("▶ Running hybrid-intruder-synonym.py (real mode) ...")
+log("▶ Running hybrid-intruder-synonym.py...")
 run_script("hybrid-intruder-synonym.py")
 
 # Delete temporary students.tsv

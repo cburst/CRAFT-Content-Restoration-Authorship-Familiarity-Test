@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import os
 import glob
+import time
 from datetime import datetime
 
 # -------------------------------------------------------------
@@ -39,6 +40,48 @@ def safe_move_pdfs(src_pattern, dst_dir):
         else:
             log(f"Moved {f} → {dst}")
     log(f"✔ Moved {len(files)} files into {dst_dir}")
+
+# -------------------------------------------------------------
+# PRE-STEP: RUN LLM TEXT GENERATOR USING MOST RECENT TSV
+#           (rename to students.tsv permanently)
+# -------------------------------------------------------------
+log(f"Finding most recent TSV in {DOWNLOADS} for LLM generation...")
+
+tsv_files = glob.glob(os.path.join(DOWNLOADS, "*.tsv"))
+if not tsv_files:
+    raise SystemExit("❌ No TSV files found in Downloads!")
+
+latest_tsv = max(tsv_files, key=os.path.getmtime)
+log(f"Latest TSV: {latest_tsv}")
+
+tsv_dir = os.path.dirname(latest_tsv)
+orig_name = os.path.basename(latest_tsv)
+
+# Move into TSV directory
+os.chdir(tsv_dir)
+log(f"Changed directory to TSV location: {tsv_dir}")
+
+# Rename latest TSV → students.tsv (no restore)
+if orig_name != "students.tsv":
+    if os.path.exists("students.tsv"):
+        raise SystemExit("❌ students.tsv already exists — aborting to avoid overwrite")
+    os.rename(orig_name, "students.tsv")
+    log(f"Renamed {orig_name} → students.tsv")
+else:
+    log("Latest TSV is already named students.tsv")
+
+# Run LLM generator
+log("▶ Running llmtextgenerator.py ...")
+run_script(os.path.join(TESTDIR, "llmtextgenerator.py"))
+
+# Ensure filesystem timestamps settle
+time.sleep(1)
+log("✔ LLM generation complete; timestamps stabilized")
+
+# Return to main test directory
+os.chdir(TESTDIR)
+log(f"Returned to working directory: {TESTDIR}")
+
 
 # -------------------------------------------------------------
 # FIND THE TWO MOST RECENT TSV FILES
