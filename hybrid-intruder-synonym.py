@@ -13,11 +13,13 @@ import time
 import html
 import json
 import requests
+import math
 from collections import Counter
 
 from weasyprint import HTML
 
 import nltk
+from nltk.stem import SnowballStemmer
 from nltk.tokenize import sent_tokenize
 
 # Ensure NLTK punkt tokenizer
@@ -37,6 +39,10 @@ FREQ_FILE = "wiki_freq.txt"  # "word count" per line
 NUM_INTRUDERS = 4            # one per quarter
 NUM_WORDS_TO_REPLACE = 5     # target number of synonym replacements
 NUM_CANDIDATE_OBSCURE = 20   # how many rare words to consider for synonym replacement
+MIN_QUARTER_SIZE = 2
+
+MAX_PARAGRAPH_RETRIES = 8
+MAX_INTRUDER_DETECTION_RATE = 0.25
 
 # Use environment variable for safety
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -45,9 +51,7 @@ if not OPENAI_API_KEY:
 
 OPENAI_URL = "https://api.openai.com/v1/responses"
 OPENAI_MODEL = "gpt-4.1"
-
-OPENAI_MAX_RETRIES = 3
-OPENAI_INTRUDER_MAX_RETRIES = 5
+OPENAI_MAX_RETRIES = 8
 
 AVOID_WORDS = {
     "hufs", "macalister", "minerva", "students", "learners",
@@ -67,6 +71,7 @@ STOPWORDS = {
     "five","first","second","third"
 }
 
+stemmer = SnowballStemmer("english")
 
 # ====================================================
 # GENERAL UTILITIES
@@ -150,6 +155,23 @@ def build_unified_paragraph(sentences):
         parts.append(f"{label} {sent}")
     return " ".join(parts)
 
+def same_order_of_magnitude(r1, r2, multiplier_cap=5):
+    if r1 <= 0 or r2 <= 0:
+        return False
+
+    m1 = int(math.log10(r1))
+    m2 = int(math.log10(r2))
+
+    # ±1 order-of-magnitude check
+    if abs(m1 - m2) > 1:
+        return False
+
+    # Linear multiplier cap (prevents extreme rarity inflation)
+    if r2 > r1 * multiplier_cap:
+        return False
+
+    return True
+    
 def levenshtein_similarity(a, b):
     """
     Normalized Levenshtein similarity in [0,1].
@@ -240,6 +262,13 @@ def intruder_too_similar(candidate, existing_intruders, threshold=0.75):
     return False
 
 def llm_chat(system_prompt, user_prompt, temperature=0.7, max_tokens=200):
+    """
+    Robust OpenAI Responses API wrapper with:
+      - safe error printing
+      - exponential backoff
+      - minimum token floor (>=16 required)
+    """
+
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json",
@@ -249,20 +278,22 @@ def llm_chat(system_prompt, user_prompt, temperature=0.7, max_tokens=200):
         "model": OPENAI_MODEL,
         "input": f"{system_prompt}\n\n{user_prompt}",
         "temperature": temperature,
-        "max_output_tokens": max_tokens,
+        "max_output_tokens": max(16, max_tokens),  # enforce OpenAI minimum
     }
 
     last_error = None
 
     for attempt in range(1, OPENAI_MAX_RETRIES + 1):
+        resp = None
         try:
             resp = requests.post(
                 OPENAI_URL,
                 headers=headers,
                 json=payload,
-                timeout=30
+                timeout=60
             )
 
+            # Retry only on transient errors
             if resp.status_code in (429, 500, 502, 503, 504):
                 raise requests.HTTPError(
                     f"Transient API error {resp.status_code}: {resp.text}",
@@ -272,9 +303,11 @@ def llm_chat(system_prompt, user_prompt, temperature=0.7, max_tokens=200):
             resp.raise_for_status()
             data = resp.json()
 
+            # Shortcut field
             if data.get("output_text"):
                 return data["output_text"].strip()
 
+            # Structured extraction
             for item in data.get("output", []):
                 for block in item.get("content", []):
                     if block.get("type") == "output_text":
@@ -285,13 +318,62 @@ def llm_chat(system_prompt, user_prompt, temperature=0.7, max_tokens=200):
         except Exception as e:
             last_error = e
             wait = 2 ** attempt
+
             print(f"⚠️ LLM API attempt {attempt} failed: {e}")
-            print(resp.text)
-            print(f"⏳ Retrying in {wait} seconds...")
-            time.sleep(wait)
+            if resp is not None:
+                try:
+                    print(resp.text)
+                except:
+                    pass
 
-    raise RuntimeError(f"LLM call failed after {OPENAI_MAX_RETRIES} retries: {last_error}")
+            if attempt < OPENAI_MAX_RETRIES:
+                print(f"⏳ Retrying in {wait} seconds...")
+                time.sleep(wait)
 
+    raise RuntimeError(
+        f"LLM call failed after {OPENAI_MAX_RETRIES} retries: {last_error}"
+    )
+
+def api_detect_outlier_sentences(hybrid_paragraph):
+    """
+    Ask the LLM open-ended which sentence numbers stand out.
+
+    Returns:
+        list of integers (sentence numbers it flagged)
+    """
+
+    system_prompt = (
+        "You are a careful academic reader.\n\n"
+        "Some sentences in the paragraph below may not fit naturally "
+        "with the surrounding discourse.\n\n"
+        "List the sentence numbers (e.g., 3, 7, 12) that stand out as "
+        "possibly unrelated or inserted.\n"
+        "If none stand out, return: NONE\n"
+        "Return ONLY a comma-separated list of numbers or NONE."
+    )
+
+    user_prompt = hybrid_paragraph
+
+    raw = llm_chat(system_prompt, user_prompt, temperature=0.2, max_tokens=80)
+
+    raw = raw.strip()
+
+    if raw.upper() == "NONE":
+        return []
+
+    nums = re.findall(r"\d+", raw)
+    return [int(n) for n in nums]
+
+def compute_detection_rate(flagged_numbers, true_intruder_numbers):
+    flagged = set(flagged_numbers)
+    true_intruders = set(true_intruder_numbers)
+
+    correct_hits = flagged.intersection(true_intruders)
+
+    if not true_intruders:
+        return 0.0
+
+    return len(correct_hits) / len(true_intruders)
 
 
 # ====================================================
@@ -351,6 +433,10 @@ def find_sentence_and_surface_word(text, word_lower):
 def get_synonym_from_llm(surface_word, sentence, all_words_in_text, freq_ranks):
     """
     LLM synonym generator with FULL diagnostic logging.
+    Uses ±1 order-of-magnitude difficulty control
+    + Snowball stem rejection
+    + Levenshtein safety check
+    + Grammar regression check (only rejects NEW errors).
     """
 
     # ---- skip capitalized originals ----
@@ -361,23 +447,17 @@ def get_synonym_from_llm(surface_word, sentence, all_words_in_text, freq_ranks):
     surface_lower = surface_word.lower()
     original_rank = freq_ranks.get(surface_lower, 10**9)
 
-    MAX_MULTIPLIER = 6
-    MAX_ABSOLUTE_DELTA = 15000
-    max_allowed_rank = max(
-        original_rank * MAX_MULTIPLIER,
-        original_rank + MAX_ABSOLUTE_DELTA
-    )
-
     system_prompt = (
-        "You are a precise thesaurus assistant. Given an English word as it appears "
-        "inside a sentence, produce exactly one lowercase synonym that can replace "
-        "the original word.\n\n"
+        "You are a precise lexical substitution assistant. Given an English word "
+        "as it appears inside a sentence, produce exactly one lowercase synonym "
+        "that can replace the original word without breaking grammar.\n\n"
         "Requirements:\n"
         "1) lowercase only\n"
         "2) same part of speech and inflection\n"
-        "3) similar or slightly higher difficulty, but not much harder\n"
-        "4) output ONLY the word\n"
-        "5) if unsure, repeat the original word"
+        "3) must preserve the same argument structure (no new prepositions)\n"
+        "4) similar or slightly higher difficulty, but not drastically harder\n"
+        "5) output ONLY the word\n"
+        "6) if unsure, output #FAIL"
     )
 
     user_prompt = (
@@ -385,64 +465,156 @@ def get_synonym_from_llm(surface_word, sentence, all_words_in_text, freq_ranks):
         f"Original word: {surface_word}"
     )
 
-    original_threshold = max(1, len(surface_lower) // 2)
+    original_threshold = max(1, int(len(surface_lower) * 0.30))
+
+    # ---- compute allowed magnitude range (±1) ----
+    if original_rank <= 0:
+        original_rank = 1
+
+    orig_mag = int(math.log10(original_rank))
+    min_allowed_mag = orig_mag - 1
+    max_allowed_mag = orig_mag + 1
+
+    last_rejected = None
 
     for attempt in range(1, OPENAI_MAX_RETRIES + 1):
+
         print("\n----------------------------")
         print(f"🔍 LLM synonym attempt {attempt} for '{surface_word}'")
         print("Sentence:", sentence)
 
         try:
-            raw = llm_chat(system_prompt, user_prompt, temperature=0.45, max_tokens=20)
+            raw = llm_chat(system_prompt, user_prompt, temperature=0.45, max_tokens=10)
             print("🧠 LLM raw output:", raw)
 
             candidate = raw.strip("'\"").strip().lower()
 
+            if candidate == "#fail":
+                print("⚠️ LLM returned #FAIL — aborting.")
+                return None
+
             if not re.fullmatch(r"[a-z]+", candidate):
                 print("❌ Rejected — synonym must be a single unhyphenated word.")
+                if candidate == last_rejected:
+                    print("⚠️ Same rejected candidate twice in a row — aborting.")
+                    return None
+                last_rejected = candidate
                 continue
 
             synonym = candidate
 
             if synonym == surface_lower:
                 print("❌ Rejected — identical to original.")
+                if synonym == last_rejected:
+                    print("⚠️ Same rejected candidate twice in a row — aborting.")
+                    return None
+                last_rejected = synonym
                 continue
 
             syn_rank = freq_ranks.get(synonym, 10**9)
+
             print(
                 f"📊 Frequency ranks — original: {original_rank}, "
-                f"candidate: {syn_rank}, "
-                f"max allowed: {max_allowed_rank}"
+                f"candidate: {syn_rank}"
             )
 
-            if syn_rank > max_allowed_rank:
-                print("❌ Rejected — synonym too obscure relative to original.")
+            # ---- ±1 ORDER-OF-MAGNITUDE CHECK ----
+            if syn_rank <= 0:
+                syn_rank = 1
+
+            syn_mag = int(math.log10(syn_rank))
+
+            if not (min_allowed_mag <= syn_mag <= max_allowed_mag):
+                print(
+                    f"❌ Rejected — outside ±1 order of magnitude "
+                    f"(orig_mag={orig_mag}, cand_mag={syn_mag})"
+                )
+                if synonym == last_rejected:
+                    print("⚠️ Same rejected candidate twice in a row — aborting.")
+                    return None
+                last_rejected = synonym
                 continue
 
+            # ---- STEM REJECTION ----
+            if stemmer.stem(surface_lower) == stemmer.stem(synonym):
+                print("❌ Rejected — same morphological stem.")
+                if synonym == last_rejected:
+                    print("⚠️ Same rejected candidate twice in a row — aborting.")
+                    return None
+                last_rejected = synonym
+                continue
+
+            # ---- LEVENSHTEIN SIMILARITY CHECK ----
             dist_orig = levenshtein(surface_lower, synonym)
             if dist_orig <= original_threshold:
                 print(
                     f"❌ Rejected — too similar to original "
                     f"(dist={dist_orig}, threshold={original_threshold})"
                 )
+                if synonym == last_rejected:
+                    print("⚠️ Same rejected candidate twice in a row — aborting.")
+                    return None
+                last_rejected = synonym
                 continue
 
+            # ---- COLLISION WITH OTHER WORDS ----
             conflict = False
             for w in all_words_in_text:
                 if w == surface_lower:
                     continue
+
                 threshold_other = max(1, int(len(w) * 0.30))
-                dist_other = levenshtein(w, synonym)
-                if dist_other <= threshold_other:
-                    print(
-                        f"❌ Rejected — too similar to existing word '{w}' "
-                        f"(dist={dist_other}, threshold={threshold_other})"
-                    )
+                if levenshtein(w, synonym) <= threshold_other:
+                    print(f"❌ Rejected — too similar to existing word '{w}'")
                     conflict = True
                     break
 
             if conflict:
+                if synonym == last_rejected:
+                    print("⚠️ Same rejected candidate twice in a row — aborting.")
+                    return None
+                last_rejected = synonym
                 continue
+
+            # =====================================================
+            # NEW: GRAMMAR REGRESSION CHECK (minimal addition)
+            # =====================================================
+            modified_sentence = re.sub(
+                rf"\b{re.escape(surface_word)}\b",
+                synonym,
+                sentence,
+                count=1
+            )
+
+            grammar_prompt = (
+                "Compare the two sentences below.\n\n"
+                "Sentence A (original):\n"
+                f"{sentence}\n\n"
+                "Sentence B (modified):\n"
+                f"{modified_sentence}\n\n"
+                "Does sentence B introduce a new grammatical error "
+                "that was not already present in sentence A?\n\n"
+                "Answer YES or NO only."
+            )
+
+            grammar_response = llm_chat(
+                system_prompt="You are a strict grammar evaluator.",
+                user_prompt=grammar_prompt,
+                temperature=0,
+                max_tokens=5
+            ).strip().upper()
+
+            print("🧠 Grammar comparison:", grammar_response)
+
+            if grammar_response == "YES":
+                print("❌ Rejected — introduces new grammatical error.")
+                if synonym == last_rejected:
+                    print("⚠️ Same rejected candidate twice in a row — aborting.")
+                    return None
+                last_rejected = synonym
+                continue
+
+            # =====================================================
 
             print(f"✅ Accepted synonym for '{surface_word}': {synonym}")
             return synonym
@@ -567,23 +739,18 @@ def transform_text_with_synonyms(text, freq_ranks):
 def generate_intruder_sentence(essay_section_sentences, existing_sentences, intruder_index):
     """
     Generate one plausible intruder sentence with:
-      - upward-biased generation (toward upper word-count bound)
-      - slightly loosened length floor
-      - asymmetric content-ratio constraint (low punished, high allowed)
-      - primary + fallback prompts
 
-    Logs:
-      - attempt number
-      - prompt type
-      - preview
-      - word count
-      - content ratio
-      - acceptance or explicit rejection reason
+      - relaxed length window (75%–125%)
+      - best-candidate tracking
+      - primary + fallback prompts
+      - if no perfect candidate → return best seen
+      - if nothing usable → HARD FAIL
+
+    This function will raise RuntimeError if no intruder can be generated.
     """
 
     if not OPENAI_API_KEY:
-        print(f"⚠️ Intruder {intruder_index}: no API key; using fallback sentence.")
-        return "This sentence relates to the topic but is not from the original essay."
+        raise RuntimeError("OPENAI_API_KEY missing — cannot generate intruders.")
 
     # ---------- section statistics ----------
     lengths, densities = [], []
@@ -598,64 +765,55 @@ def generate_intruder_sentence(essay_section_sentences, existing_sentences, intr
     avg_len = int(sum(lengths) / max(1, len(lengths)))
     avg_density = sum(densities) / max(1, len(densities))
 
-    # ---------- length & density controls ----------
-    CONTENT_RATIO_TOLERANCE = 0.15
+    # ---------- relaxed constraints ----------
+    CONTENT_RATIO_TOLERANCE = 0.20
     min_density = max(0.0, avg_density - CONTENT_RATIO_TOLERANCE)
 
-    # slightly loosened lower bound; upper bound unchanged
-    min_len_1 = max(6, int(avg_len * 0.85))   # was 0.90
-    max_len_1 = int(avg_len * 1.15)
-
-    min_len_2 = max(6, int(avg_len * 0.80))   # fallback slightly wider
-    max_len_2 = int(avg_len * 1.20)
+    min_len = max(6, int(avg_len * 0.75))
+    max_len = int(avg_len * 1.25)
 
     prompts = [
         {
             "label": "primary",
-            "min_len": min_len_1,
-            "max_len": max_len_1,
             "system": (
                 "You are a careful academic writing assistant.\n\n"
                 "Write ONE detailed sentence that could appear in this essay section.\n\n"
                 f"Requirements:\n"
-                f"1) {min_len_1}–{max_len_1} words "
-                f"(aim for the UPPER end of this range)\n"
+                f"1) {min_len}–{max_len} words\n"
                 "2) Similar academic level and amount of detail\n"
-                "3) May introduce ONE concrete supporting detail if needed\n"
-                "4) Avoid discourse markers (e.g., moreover, additionally)\n"
-                "5) Do NOT repeat or closely paraphrase any existing sentence\n"
-                "6) Output ONE sentence only"
+                "3) Avoid discourse markers\n"
+                "4) Do NOT repeat or closely paraphrase any existing sentence\n"
+                "5) Output ONE sentence only"
             )
         },
         {
             "label": "fallback",
-            "min_len": min_len_2,
-            "max_len": max_len_2,
             "system": (
                 "You are a careful academic writing assistant.\n\n"
-                "Write ONE detailed academic sentence related to this essay section, "
-                "with substantial informational content.\n\n"
+                "Write ONE detailed academic sentence related to this essay section.\n\n"
                 f"Requirements:\n"
-                f"1) {min_len_2}–{max_len_2} words "
-                f"(aim for approximately {max_len_2} words)\n"
-                "2) Comparable or slightly higher informational density than the section\n"
-                "3) You MAY reframe an idea or add a small contextual detail\n"
-                "4) Avoid generic filler or discourse markers\n"
-                "5) Do NOT repeat any existing sentence\n"
-                "6) Output ONE sentence only"
+                f"1) {min_len}–{max_len} words\n"
+                "2) Comparable informational density\n"
+                "3) Avoid generic filler\n"
+                "4) Do NOT repeat any existing sentence\n"
+                "5) Output ONE sentence only"
             )
         }
     ]
 
-
-
     existing_norms = {normalize_sentence(s) for s in existing_sentences}
 
+    best_candidate = None
+    best_score = -1
+    MAX_ATTEMPTS = 8
+
     for prompt_cfg in prompts:
+
         if prompt_cfg["label"] == "fallback":
             print(f"\n🔁 Switching to fallback intruder prompt for section {intruder_index}")
 
-        for attempt in range(1, OPENAI_INTRUDER_MAX_RETRIES + 1):
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+
             print("\n----------------------------")
             print(
                 f"🔍 OpenAI intruder attempt {attempt} "
@@ -671,15 +829,16 @@ def generate_intruder_sentence(essay_section_sentences, existing_sentences, intr
                 )
 
                 candidate = raw.strip("'\"")
-
                 tokens = tokenize_words_lower(candidate)
+
                 if not tokens:
-                    print("❌ Rejected — empty or non-tokenizable output.")
+                    print("❌ Rejected — empty output.")
                     continue
 
                 wc = len(tokens)
                 content_wc = sum(1 for t in tokens if t not in STOPWORDS)
                 density = content_wc / wc
+                norm = normalize_sentence(candidate)
 
                 preview = " ".join(candidate.split()[:6])
                 if len(candidate.split()) > 6:
@@ -687,56 +846,97 @@ def generate_intruder_sentence(essay_section_sentences, existing_sentences, intr
 
                 print(f"✂️ Preview: \"{preview}\"")
                 print(
-                    f"📏 Word count: {wc} "
-                    f"(target {prompt_cfg['min_len']}–{prompt_cfg['max_len']})\n"
-                    f"📊 Content ratio: {density:.2f} "
-                    f"(min {min_density:.2f}, section avg ≈ {avg_density:.2f})"
+                    f"📏 Word count: {wc} (target {min_len}–{max_len})\n"
+                    f"📊 Content ratio: {density:.2f} (min {min_density:.2f})"
                 )
 
-                if wc < prompt_cfg["min_len"] or wc > prompt_cfg["max_len"]:
-                    print("❌ Rejected — length out of range.")
-                    continue
+                # ----- scoring -----
+                length_score = 1 - abs(wc - avg_len) / max(1, avg_len)
+                density_score = min(1, density / max(0.0001, avg_density))
+                similarity_penalty = 0
 
-                if density < min_density:
-                    print("❌ Rejected — content ratio too low.")
-                    continue
-
-                norm = normalize_sentence(candidate)
                 if norm in existing_norms:
-                    print("❌ Rejected — duplicate of existing sentence.")
-                    continue
+                    similarity_penalty += 0.5
 
                 if intruder_too_similar(candidate, existing_sentences):
-                    print("❌ Rejected — surface similarity to existing sentence.")
-                    continue
+                    similarity_penalty += 0.5
 
-                print(f"✅ Accepted intruder for section {intruder_index} ({prompt_cfg['label']})")
-                return candidate
+                score = length_score + density_score - similarity_penalty
+
+                if score > best_score:
+                    best_score = score
+                    best_candidate = candidate
+
+                # ----- strict acceptance -----
+                if (
+                    min_len <= wc <= max_len and
+                    density >= min_density and
+                    norm not in existing_norms and
+                    not intruder_too_similar(candidate, existing_sentences)
+                ):
+                    print(f"✅ Accepted intruder for section {intruder_index} ({prompt_cfg['label']})")
+                    return candidate
+
+                print("❌ Rejected — did not meet strict constraints.")
 
             except Exception as e:
                 print(f"⚠️ Intruder error: {e}")
 
-    print(f"⚠️ No suitable intruder found for section {intruder_index}; using fallback sentence.")
-    return "This sentence relates to the topic but is not from the original essay."
+    # ----- soft fallback -----
+    if best_candidate:
+        print("⚠️ No perfect intruder — using best imperfect candidate.")
+        return best_candidate
+
+    # ----- HARD FAIL -----
+    raise RuntimeError(
+        f"Failed to generate usable intruder sentence for section {intruder_index}"
+    )
 
 
 def compute_quarters(n_sentences):
     """
-    Split n_sentences into up to 4 quarters as evenly as possible.
-    Returns list of (start, end) indices, end-exclusive.
+    Dynamically compute quarters based on text length.
+
+    Rules:
+      - Minimum quarter size = MIN_QUARTER_SIZE
+      - Maximum quarters = NUM_INTRUDERS
+      - If text is too short, reduce number of quarters
+      - Each quarter must have at least MIN_QUARTER_SIZE sentences
+
+    Returns:
+        list of (start, end) index tuples (end-exclusive)
     """
+
+    if n_sentences < MIN_QUARTER_SIZE:
+        return []
+
+    # Maximum number of possible quarters given minimum size
+    max_possible_quarters = n_sentences // MIN_QUARTER_SIZE
+
+    # Cap by NUM_INTRUDERS
+    num_quarters = min(NUM_INTRUDERS, max_possible_quarters)
+
+    if num_quarters == 0:
+        return []
+
+    base_size = n_sentences // num_quarters
+    remainder = n_sentences % num_quarters
+
     quarters = []
-    base = n_sentences // 4
-    remainder = n_sentences % 4
     start = 0
 
-    for i in range(4):
-        size = base + (1 if i < remainder else 0)
+    for i in range(num_quarters):
+        size = base_size + (1 if i < remainder else 0)
+
+        # Enforce minimum size
+        if size < MIN_QUARTER_SIZE:
+            size = MIN_QUARTER_SIZE
+
         end = min(n_sentences, start + size)
-        if start < end:
+
+        if end - start >= MIN_QUARTER_SIZE:
             quarters.append((start, end))
-        else:
-            quarters.append((start, start))
+
         start = end
 
     return quarters
@@ -744,78 +944,168 @@ def compute_quarters(n_sentences):
 
 def insert_intruders_into_sentences(sentences):
     """
-    Insert NUM_INTRUDERS intruder sentences into the synonym-modified sentences:
-    - One intruder per quarter
-    - Intruder appears somewhere in the quarter
-    - Not as the very first or very last sentence of the overall paragraph.
-    Returns:
-        augmented_sentences, intruder_positions (0-based), intruder_texts
+    Adversarial intruder placement with:
+      - dynamic intruder count
+      - short-text protection
+      - safe clustering
+      - API-based evaluation
     """
+
+    if not sentences:
+        return sentences, [], []
+
     original_sentences = list(sentences)
     n = len(original_sentences)
 
-    if n == 0:
-        return original_sentences, [], []
+    # ----------------------------------------
+    # STEP 1 — Generate intruders dynamically
+    # ----------------------------------------
 
     quarters = compute_quarters(n)
-    intruder_specs = []
+
+    # If text too short to generate intruders, return unchanged
+    if not quarters:
+        print("⚠️ Text too short for intruders — skipping insertion.")
+        return original_sentences, [], []
+
+    intruder_texts = []
     intruder_index = 1
-    existing_sentences_for_intruders = list(original_sentences)
+    existing_for_generation = list(original_sentences)
 
-    for q_idx, (start, end) in enumerate(quarters):
-        if intruder_index > NUM_INTRUDERS:
-            break
-        if end <= start:
-            continue
+    for (start, end) in quarters:
+        section = original_sentences[start:end]
 
-        # Determine allowed insertion indices:
-        # - indices in [start, end] region
-        # - not at index 0 (first sentence of paragraph)
-        # - not at index n (would place intruder after last sentence)
-        min_i = max(start, 1)       # avoid index 0
-        max_i = min(end, n - 1)     # avoid inserting after last sentence
-
-        if min_i > max_i:
-            # Fallback: anywhere safe in the middle of the paragraph
-            if n > 2:
-                min_i = 1
-                max_i = n - 1
-            else:
-                min_i = 1
-                max_i = 1
-
-        insert_index = random.randint(min_i, max_i)
-
-        section_sentences = original_sentences[start:end]
-        intruder_text = generate_intruder_sentence(
-            essay_section_sentences=section_sentences,
-            existing_sentences=existing_sentences_for_intruders,
+        intruder = generate_intruder_sentence(
+            essay_section_sentences=section,
+            existing_sentences=existing_for_generation,
             intruder_index=intruder_index
         )
 
-        existing_sentences_for_intruders.append(intruder_text)
-        intruder_specs.append({
-            "insert_index": insert_index,
-            "text": intruder_text
-        })
+        intruder_texts.append(intruder)
+        existing_for_generation.append(intruder)
         intruder_index += 1
 
-    # Now actually insert intruders, from highest index down
-    augmented = list(original_sentences)
-    for spec in sorted(intruder_specs, key=lambda s: s["insert_index"], reverse=True):
-        idx = spec["insert_index"]
-        txt = spec["text"]
-        if idx < 0:
-            idx = 0
-        if idx > len(augmented):
-            idx = len(augmented)
-        augmented.insert(idx, txt)
+    num_intruders = len(intruder_texts)
 
-    intruder_positions = sorted(spec["insert_index"] for spec in intruder_specs)
-    intruder_texts = [spec["text"] for spec in intruder_specs]
+    if num_intruders == 0:
+        print("⚠️ No intruders generated — returning original.")
+        return original_sentences, [], []
 
-    return augmented, intruder_positions, intruder_texts
+    # ----------------------------------------
+    # STEP 2 — Placement retries
+    # ----------------------------------------
 
+    best_candidate = None
+    best_detection_rate = 1.0
+
+    for attempt in range(1, MAX_PARAGRAPH_RETRIES + 1):
+
+        print("\n======================================")
+        print(f"🧠 Paragraph placement attempt {attempt}")
+        print("======================================")
+
+        augmented = list(original_sentences)
+
+        available_positions = list(range(1, len(augmented)))
+
+        # If not enough insertion points, skip placement
+        if len(available_positions) < num_intruders:
+            print("⚠️ Not enough insertion points — skipping intruders.")
+            return original_sentences, [], []
+
+        # ----------------------------------------
+        # Controlled clustering
+        # ----------------------------------------
+
+        if random.random() < 0.4 and num_intruders >= 2:
+
+            cluster_size = random.choice([2, 3])
+            cluster_size = min(cluster_size, num_intruders)
+
+            # Ensure valid slicing
+            if len(available_positions) > cluster_size:
+                cluster_start = random.choice(
+                    available_positions[:-cluster_size]
+                )
+                cluster_positions = [
+                    cluster_start + i for i in range(cluster_size)
+                ]
+            else:
+                cluster_positions = random.sample(
+                    available_positions,
+                    cluster_size
+                )
+
+            remaining = num_intruders - cluster_size
+
+            other_positions = [
+                p for p in available_positions
+                if p not in cluster_positions
+            ]
+
+            random_positions = (
+                random.sample(other_positions, remaining)
+                if remaining > 0
+                else []
+            )
+
+            insertion_points = sorted(cluster_positions + random_positions)
+
+        else:
+            insertion_points = sorted(
+                random.sample(available_positions, num_intruders)
+            )
+
+        # Insert from highest index downward
+        for idx, intr_text in sorted(
+            zip(insertion_points, intruder_texts),
+            key=lambda x: x[0],
+            reverse=True
+        ):
+            augmented.insert(idx, intr_text)
+
+        pdf_intruder_numbers = get_pdf_intruder_numbers_from_augmented(
+            augmented,
+            intruder_texts
+        )
+
+        hybrid_paragraph = build_unified_paragraph(augmented)
+
+        # ----------------------------------------
+        # STEP 3 — API detection
+        # ----------------------------------------
+
+        flagged_numbers = api_detect_outlier_sentences(hybrid_paragraph)
+
+        detection_rate = compute_detection_rate(
+            flagged_numbers,
+            pdf_intruder_numbers
+        )
+
+        print(f"📊 Detection rate: {detection_rate:.2f}")
+        print(f"🔎 Flagged: {flagged_numbers}")
+        print(f"🎯 True intruders: {pdf_intruder_numbers}")
+
+        if detection_rate < best_detection_rate:
+            best_detection_rate = detection_rate
+            best_candidate = (augmented, pdf_intruder_numbers)
+
+        if detection_rate <= MAX_INTRUDER_DETECTION_RATE:
+            print("✅ Paragraph accepted.")
+            return augmented, pdf_intruder_numbers, intruder_texts
+
+    # ----------------------------------------
+    # STEP 4 — Fallback to best candidate
+    # ----------------------------------------
+
+    if best_candidate:
+        print(
+            f"⚠️ No paragraph met threshold. "
+            f"Using best candidate (rate={best_detection_rate:.2f})."
+        )
+        return best_candidate[0], best_candidate[1], intruder_texts
+
+    raise RuntimeError("Intruder placement failed completely.")
 # ====================================================
 # PDF GENERATION (COMBINED TEST)
 # ====================================================
