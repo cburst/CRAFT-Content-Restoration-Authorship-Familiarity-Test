@@ -185,6 +185,18 @@ def levenshtein_similarity(a, b):
     dist = levenshtein(a, b)
     return 1.0 - dist / max(len(a), len(b))
 
+def synonym_rejection_score(original_rank, candidate_rank):
+    """
+    Lower is better.
+    Score = order-of-magnitude distance between original and candidate.
+    """
+    original_rank = max(1, int(original_rank))
+    candidate_rank = max(1, int(candidate_rank))
+
+    orig_mag = int(math.log10(original_rank))
+    cand_mag = int(math.log10(candidate_rank))
+
+    return abs(cand_mag - orig_mag)
 
 def extract_surface_phrases(sentence):
     """
@@ -679,10 +691,8 @@ def find_sentence_and_surface_word(text, word_lower):
 def get_synonym_from_llm(surface_word, sentence, all_words_in_text, freq_ranks):
     """
     LLM synonym generator with FULL diagnostic logging.
-    Uses ±1 order-of-magnitude difficulty control
-    + Snowball stem rejection
-    + Levenshtein safety check
-    + Grammar regression check (only rejects NEW errors).
+    Strict first. If all attempts fail, choose best rejected synonym (by closeness of difficulty).
+    Preserves: repeat-reject abort logic.
     """
 
     # ---- skip capitalized originals ----
@@ -723,6 +733,10 @@ def get_synonym_from_llm(surface_word, sentence, all_words_in_text, freq_ranks):
 
     last_rejected = None
 
+    # Store rejected synonyms ONLY for end-of-loop fallback
+    # Each item: (synonym, syn_rank)
+    rejected_synonyms = []
+
     for attempt in range(1, OPENAI_MAX_RETRIES + 1):
 
         print("\n----------------------------")
@@ -759,10 +773,7 @@ def get_synonym_from_llm(surface_word, sentence, all_words_in_text, freq_ranks):
 
             syn_rank = freq_ranks.get(synonym, 10**9)
 
-            print(
-                f"📊 Frequency ranks — original: {original_rank}, "
-                f"candidate: {syn_rank}"
-            )
+            print(f"📊 Frequency ranks — original: {original_rank}, candidate: {syn_rank}")
 
             # ---- ±1 ORDER-OF-MAGNITUDE CHECK ----
             if syn_rank <= 0:
@@ -775,6 +786,7 @@ def get_synonym_from_llm(surface_word, sentence, all_words_in_text, freq_ranks):
                     f"❌ Rejected — outside ±1 order of magnitude "
                     f"(orig_mag={orig_mag}, cand_mag={syn_mag})"
                 )
+                rejected_synonyms.append((synonym, syn_rank))
                 if synonym == last_rejected:
                     print("⚠️ Same rejected candidate twice in a row — aborting.")
                     return None
@@ -784,6 +796,7 @@ def get_synonym_from_llm(surface_word, sentence, all_words_in_text, freq_ranks):
             # ---- STEM REJECTION ----
             if stemmer.stem(surface_lower) == stemmer.stem(synonym):
                 print("❌ Rejected — same morphological stem.")
+                rejected_synonyms.append((synonym, syn_rank))
                 if synonym == last_rejected:
                     print("⚠️ Same rejected candidate twice in a row — aborting.")
                     return None
@@ -797,6 +810,7 @@ def get_synonym_from_llm(surface_word, sentence, all_words_in_text, freq_ranks):
                     f"❌ Rejected — too similar to original "
                     f"(dist={dist_orig}, threshold={original_threshold})"
                 )
+                rejected_synonyms.append((synonym, syn_rank))
                 if synonym == last_rejected:
                     print("⚠️ Same rejected candidate twice in a row — aborting.")
                     return None
@@ -808,7 +822,6 @@ def get_synonym_from_llm(surface_word, sentence, all_words_in_text, freq_ranks):
             for w in all_words_in_text:
                 if w == surface_lower:
                     continue
-
                 threshold_other = max(1, int(len(w) * 0.30))
                 if levenshtein(w, synonym) <= threshold_other:
                     print(f"❌ Rejected — too similar to existing word '{w}'")
@@ -816,15 +829,14 @@ def get_synonym_from_llm(surface_word, sentence, all_words_in_text, freq_ranks):
                     break
 
             if conflict:
+                rejected_synonyms.append((synonym, syn_rank))
                 if synonym == last_rejected:
                     print("⚠️ Same rejected candidate twice in a row — aborting.")
                     return None
                 last_rejected = synonym
                 continue
 
-            # =====================================================
-            # NEW: GRAMMAR REGRESSION CHECK (minimal addition)
-            # =====================================================
+            # ---- GRAMMAR REGRESSION CHECK ----
             modified_sentence = re.sub(
                 rf"\b{re.escape(surface_word)}\b",
                 synonym,
@@ -854,13 +866,12 @@ def get_synonym_from_llm(surface_word, sentence, all_words_in_text, freq_ranks):
 
             if grammar_response == "YES":
                 print("❌ Rejected — introduces new grammatical error.")
+                rejected_synonyms.append((synonym, syn_rank))
                 if synonym == last_rejected:
                     print("⚠️ Same rejected candidate twice in a row — aborting.")
                     return None
                 last_rejected = synonym
                 continue
-
-            # =====================================================
 
             print(f"✅ Accepted synonym for '{surface_word}': {synonym}")
             return synonym
@@ -868,7 +879,43 @@ def get_synonym_from_llm(surface_word, sentence, all_words_in_text, freq_ranks):
         except Exception as e:
             print(f"⚠️ LLM error on attempt {attempt}: {e}")
 
+    # ---- If we got here, strict acceptance failed ----
     print(f"⚠️ No suitable synonym found for '{surface_word}' after retries.")
+
+    # -------------------------------------------------
+    # Global fallback: choose best rejected synonym
+    # -------------------------------------------------
+    if rejected_synonyms:
+
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_rejected = []
+        for syn, rank in rejected_synonyms:
+            if syn not in seen:
+                seen.add(syn)
+                unique_rejected.append((syn, rank))
+
+        best_synonym = None
+        best_score = float("inf")
+        best_rank = None
+
+        for syn, rank in unique_rejected:
+            score = synonym_rejection_score(original_rank, rank)
+
+            # Lower score = closer difficulty match
+            if score < best_score:
+                best_score = score
+                best_synonym = syn
+                best_rank = rank
+
+        if best_synonym:
+            print(
+                f"⚠️ Global fallback activated — "
+                f"using best rejected synonym: {best_synonym} "
+                f"(rank={best_rank}, difficulty_score={best_score})"
+            )
+            return best_synonym
+
     return None
     
 def get_pos_from_llm(surface_word, sentence):
@@ -984,13 +1031,14 @@ def transform_text_with_synonyms(text, freq_ranks):
 
 def generate_intruder_sentence(essay_section_sentences, existing_sentences, intruder_index):
     """
-    Production-stable intruder generator.
+    Robust intruder generator with:
 
-    Features:
-      - Progressive relaxation (length, density, similarity)
-      - Discourse marker suppression
-      - Best-candidate fallback
-      - No hard crash
+      - Progressive relaxation
+      - Global similarity threshold (via intruder_too_similar)
+      - Strong discourse marker suppression
+      - Best-candidate tracking
+      - Never crashes
+      - Returns best observed candidate if no strict pass
     """
 
     if not OPENAI_API_KEY:
@@ -1000,7 +1048,6 @@ def generate_intruder_sentence(essay_section_sentences, existing_sentences, intr
     # Section statistics
     # --------------------------------------------------
     lengths, densities = [], []
-
     for s in essay_section_sentences:
         tokens = tokenize_words_lower(s)
         if not tokens:
@@ -1012,21 +1059,22 @@ def generate_intruder_sentence(essay_section_sentences, existing_sentences, intr
     avg_len = max(8, int(sum(lengths) / max(1, len(lengths))))
     avg_density = sum(densities) / max(1, len(densities))
 
-    # Base constraints (already moderately relaxed)
-    base_min_len = max(6, int(avg_len * 0.6))
-    base_max_len = int(avg_len * 1.4)
-    base_min_density = max(0.0, avg_density - 0.20)
+    min_len_base = max(6, int(avg_len * 0.6))
+    max_len_base = int(avg_len * 1.4)
+    min_density_base = max(0.0, avg_density - 0.20)
 
     # --------------------------------------------------
     # Prompt
     # --------------------------------------------------
     system_prompt = (
         "You are a careful academic writing assistant.\n\n"
-        "Write ONE additional sentence that could plausibly appear in this section.\n"
-        "It must add a specific detail, clarification, example, or implication.\n\n"
-        "Avoid discourse markers such as: however, moreover, furthermore, in conclusion, overall.\n"
-        "Do NOT repeat wording from the section.\n"
-        "The sentence must stand alone grammatically.\n"
+        "Write ONE sentence that could plausibly continue the following section.\n\n"
+        "The sentence must:\n"
+        "- Add a concrete detail, clarification, or implication\n"
+        "- Match academic tone and informational density\n"
+        "- Avoid discourse markers (e.g., Furthermore, In conclusion, Overall, Moreover)\n"
+        "- Avoid copying wording from the section\n"
+        "- Stand alone grammatically\n"
         "Output ONE sentence only."
     )
 
@@ -1039,42 +1087,38 @@ def generate_intruder_sentence(essay_section_sentences, existing_sentences, intr
 
     MAX_ATTEMPTS = 8
 
+    # --------------------------------------------------
+    # Attempt loop with progressive relaxation
+    # --------------------------------------------------
     for attempt in range(1, MAX_ATTEMPTS + 1):
 
         print("\n----------------------------")
         print(f"🔍 Intruder attempt {attempt} for section {intruder_index}")
 
-        # --------------------------------------------------
-        # Progressive relaxation
-        # --------------------------------------------------
-        relax_factor = (attempt - 1) / (MAX_ATTEMPTS - 1)
+        # Progressive relaxation factor (0 → 1)
+        relax = (attempt - 1) / (MAX_ATTEMPTS - 1)
 
-        # Length widens up to ±40%
-        len_slack = int(avg_len * 0.40 * relax_factor)
-        min_len = max(5, base_min_len - len_slack)
-        max_len = base_max_len + len_slack
+        # --- Length relaxation ---
+        length_slack = int(avg_len * 0.40 * relax)   # up to ±40%
+        min_len = max(5, min_len_base - length_slack)
+        max_len = max_len_base + length_slack
 
-        # Density relaxes gradually
-        min_density = max(0.35, base_min_density - (0.20 * relax_factor))
-
-        # Similarity threshold increases (more tolerant)
-        similarity_threshold = min(
-            0.90,
-            INTRUDER_SIMILARITY_BASE + (0.20 * relax_factor)
-        )
+        # --- Density relaxation ---
+        min_density = max(0.35, min_density_base - (0.30 * relax))
 
         try:
             raw = llm_chat(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                temperature=0.75,
-                max_tokens=200
+                temperature=0.85,   # slight creativity boost
+                max_tokens=220
             )
 
             candidate = raw.strip("'\"")
             tokens = tokenize_words_lower(candidate)
 
             if not tokens:
+                print("❌ Rejected — empty output.")
                 continue
 
             wc = len(tokens)
@@ -1085,52 +1129,34 @@ def generate_intruder_sentence(essay_section_sentences, existing_sentences, intr
             print(f"📏 Words: {wc} (target {min_len}-{max_len})")
             print(f"📊 Density: {density:.2f} (min {min_density:.2f})")
 
-            # --------------------------------------------------
-            # Discourse marker suppression
-            # --------------------------------------------------
-            first_word = tokens[0].lower()
-            banned_markers = {
-                "however", "moreover", "furthermore",
-                "therefore", "overall", "consequently"
-            }
+            # ------------------------------------
+            # Similarity check (global threshold)
+            # ------------------------------------
+            too_similar = intruder_too_similar(candidate, existing_sentences)
 
-            if first_word in banned_markers:
-                print("❌ Rejected — discourse marker.")
-                continue
-
-            # --------------------------------------------------
-            # Similarity check
-            # --------------------------------------------------
-            too_similar = intruder_too_similar(
-                candidate,
-                existing_sentences,
-                threshold=similarity_threshold
-            )
-
-            # --------------------------------------------------
-            # Scoring (for fallback)
-            # --------------------------------------------------
+            # ------------------------------------
+            # Scoring (for fallback selection)
+            # ------------------------------------
             length_score = 1 - abs(wc - avg_len) / max(1, avg_len)
             density_score = min(1, density / max(0.0001, avg_density))
             similarity_penalty = 0.5 if too_similar else 0
-            duplicate_penalty = 0.5 if norm in existing_norms else 0
 
-            score = length_score + density_score - similarity_penalty - duplicate_penalty
+            score = length_score + density_score - similarity_penalty
 
             if score > best_score:
                 best_score = score
                 best_candidate = candidate
 
-            # --------------------------------------------------
-            # Acceptance condition
-            # --------------------------------------------------
+            # ------------------------------------
+            # Acceptance condition (relaxed)
+            # ------------------------------------
             if (
                 min_len <= wc <= max_len and
                 density >= min_density and
                 norm not in existing_norms and
                 not too_similar
             ):
-                print(f"✅ Accepted intruder (relax {relax_factor:.2f})")
+                print(f"✅ Accepted intruder (relax level {relax:.2f})")
                 return candidate
 
             print("❌ Rejected — constraints not met.")
@@ -1139,17 +1165,14 @@ def generate_intruder_sentence(essay_section_sentences, existing_sentences, intr
             print(f"⚠️ Intruder error: {e}")
 
     # --------------------------------------------------
-    # Best-candidate fallback (controlled, no junk)
+    # Final fallback: return best observed candidate
     # --------------------------------------------------
     if best_candidate:
-        print("⚠️ Using best imperfect intruder candidate.")
+        print("⚠️ Returning best available candidate after relaxation.")
         return best_candidate
 
-    # If absolutely nothing usable was generated,
-    # raise a clean error so outer logic can retry
     raise RuntimeError(
-        f"Intruder generation failed for section {intruder_index} "
-        f"after progressive relaxation."
+        f"Failed to generate usable intruder sentence for section {intruder_index}"
     )
 
 def get_sentence_embeddings(sentences):
