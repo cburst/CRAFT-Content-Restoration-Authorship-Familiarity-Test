@@ -15,9 +15,8 @@ import json
 import requests
 import math
 from collections import Counter
-
+import statistics
 from weasyprint import HTML
-
 import nltk
 from nltk.stem import SnowballStemmer
 from nltk.tokenize import sent_tokenize
@@ -39,10 +38,10 @@ FREQ_FILE = "wiki_freq.txt"  # "word count" per line
 NUM_INTRUDERS = 4            # one per quarter
 NUM_WORDS_TO_REPLACE = 5     # target number of synonym replacements
 NUM_CANDIDATE_OBSCURE = 20   # how many rare words to consider for synonym replacement
-MIN_QUARTER_SIZE = 2
-
-MAX_PARAGRAPH_RETRIES = 8
-MAX_INTRUDER_DETECTION_RATE = 0.25
+MIN_QUARTER_SIZE = 2          # minimum sentences per segment for intruder generation
+MAX_PARAGRAPH_RETRIES = 4     # max placement attempts before fallback
+MAX_INTRUDER_DETECTION_RATE = 0.25  # max acceptable intruder detectability
+MIN_DISPERSION_SCORE = 0.5  # minimum irregularity required for acceptance
 
 # Use environment variable for safety
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -51,7 +50,7 @@ if not OPENAI_API_KEY:
 
 OPENAI_URL = "https://api.openai.com/v1/responses"
 OPENAI_MODEL = "gpt-4.1"
-OPENAI_MAX_RETRIES = 8
+OPENAI_MAX_RETRIES = 4
 
 AVOID_WORDS = {
     "hufs", "macalister", "minerva", "students", "learners",
@@ -267,6 +266,7 @@ def llm_chat(system_prompt, user_prompt, temperature=0.7, max_tokens=200):
       - safe error printing
       - exponential backoff
       - minimum token floor (>=16 required)
+      - API timing instrumentation
     """
 
     headers = {
@@ -278,7 +278,7 @@ def llm_chat(system_prompt, user_prompt, temperature=0.7, max_tokens=200):
         "model": OPENAI_MODEL,
         "input": f"{system_prompt}\n\n{user_prompt}",
         "temperature": temperature,
-        "max_output_tokens": max(16, max_tokens),  # enforce OpenAI minimum
+        "max_output_tokens": max(16, max_tokens),
     }
 
     last_error = None
@@ -286,11 +286,20 @@ def llm_chat(system_prompt, user_prompt, temperature=0.7, max_tokens=200):
     for attempt in range(1, OPENAI_MAX_RETRIES + 1):
         resp = None
         try:
+            print(f"\n⏱ LLM API attempt {attempt} start: {time.strftime('%H:%M:%S')}")
+            api_start = time.perf_counter()
+
             resp = requests.post(
                 OPENAI_URL,
                 headers=headers,
                 json=payload,
                 timeout=60
+            )
+
+            elapsed = time.perf_counter() - api_start
+            print(
+                f"⏱ LLM API attempt {attempt} end: {time.strftime('%H:%M:%S')} "
+                f"(elapsed {elapsed:.2f}s)"
             )
 
             # Retry only on transient errors
@@ -316,6 +325,11 @@ def llm_chat(system_prompt, user_prompt, temperature=0.7, max_tokens=200):
             raise RuntimeError(f"No text returned from OpenAI response: {data}")
 
         except Exception as e:
+            elapsed = time.perf_counter() - api_start
+            print(
+                f"⏱ LLM API attempt {attempt} failed after {elapsed:.2f}s"
+            )
+
             last_error = e
             wait = 2 ** attempt
 
@@ -333,6 +347,221 @@ def llm_chat(system_prompt, user_prompt, temperature=0.7, max_tokens=200):
     raise RuntimeError(
         f"LLM call failed after {OPENAI_MAX_RETRIES} retries: {last_error}"
     )
+
+def api_place_intruders(original_sentences, intruder_sentences):
+    """
+    Stable index-based intruder placement.
+
+    The LLM returns ONLY insertion indices.
+    We perform deterministic insertion locally.
+
+    Guarantees:
+        - No sentence loss
+        - No duplication
+        - Original order preserved
+        - Exact final length
+    """
+
+    n_original = len(original_sentences)
+    n_intruders = len(intruder_sentences)
+
+    # Label originals O1..On
+    numbered_original = "\n".join(
+        f"O{i+1}: {s}"
+        for i, s in enumerate(original_sentences)
+    )
+
+    # Label intruders I1..Ik
+    numbered_intruders = "\n".join(
+        f"I{i+1}: {s}"
+        for i, s in enumerate(intruder_sentences)
+    )
+
+    system_prompt = (
+        "You are a discourse editor.\n\n"
+        "Your task is ONLY to decide where to insert intruder sentences.\n\n"
+        "Return insertion positions using this exact format:\n"
+        "I1 -> after O3\n"
+        "I2 -> after O7\n\n"
+        "Rules:\n"
+        "- Each intruder must appear exactly once\n"
+        "- Do NOT reorder original sentences\n"
+        "- Avoid evenly spaced placements\n"
+        "- Prefer asymmetry and irregular spacing\n"
+        "- Small clusters (2 close together) are acceptable\n"
+        "- Do NOT create simple arithmetic patterns\n"
+        "- Positions should look natural and unpredictable\n"
+        "- Return ONLY the mapping lines\n"
+        "- Do NOT explain anything"
+    )
+    
+    user_prompt = (
+        "ORIGINAL SENTENCES:\n"
+        f"{numbered_original}\n\n"
+        "INTRUDER SENTENCES:\n"
+        f"{numbered_intruders}"
+    )
+
+    response = llm_chat(
+        system_prompt,
+        user_prompt,
+        temperature=0.8,
+        max_tokens=200
+    )
+
+    # --------------------------------------------------
+    # Parse mapping lines: I1 -> after O3
+    # --------------------------------------------------
+
+    pattern = r"I(\d+)\s*->\s*after\s*O(\d+)"
+    matches = re.findall(pattern, response)
+
+    if len(matches) != n_intruders:
+        raise RuntimeError(
+            f"Placement mapping invalid. "
+            f"Expected {n_intruders} mappings, got {len(matches)}.\nResponse:\n{response}"
+        )
+
+    # Convert to structured list
+    placements = []
+
+    used_positions = set()
+
+    for intr_idx_str, orig_idx_str in matches:
+        intr_idx = int(intr_idx_str)
+        orig_idx = int(orig_idx_str)
+
+        if not (1 <= intr_idx <= n_intruders):
+            raise RuntimeError("Invalid intruder index returned by LLM.")
+
+        if not (1 <= orig_idx <= n_original):
+            raise RuntimeError("Invalid original index returned by LLM.")
+
+        if orig_idx in used_positions:
+            raise RuntimeError("LLM reused same insertion point.")
+
+        used_positions.add(orig_idx)
+        placements.append((intr_idx, orig_idx))
+
+    # --------------------------------------------------
+    # Detect evenly spaced pattern (anti-cheating)
+    # --------------------------------------------------
+
+    sorted_positions = sorted(orig_idx for _, orig_idx in placements)
+
+    if len(sorted_positions) >= 3:
+        diffs = [
+            sorted_positions[i+1] - sorted_positions[i]
+            for i in range(len(sorted_positions) - 1)
+        ]
+        if len(set(diffs)) == 1:
+            raise RuntimeError("Even spacing pattern detected — rejecting.")
+
+    # --------------------------------------------------
+    # Perform deterministic insertion
+    # --------------------------------------------------
+
+    augmented = list(original_sentences)
+
+    # Sort by original index descending so insertion is stable
+    placements.sort(key=lambda x: x[1], reverse=True)
+
+    for intr_idx, orig_idx in placements:
+        intruder_text = intruder_sentences[intr_idx - 1]
+        augmented.insert(orig_idx, intruder_text)
+
+    # Final structural validation
+    expected_length = n_original + n_intruders
+
+    if len(augmented) != expected_length:
+        raise RuntimeError(
+            f"Post-insertion length mismatch: "
+            f"{len(augmented)} vs expected {expected_length}"
+        )
+
+    return augmented
+
+def spacing_irregularity_score(intruder_positions, total_sentences):
+    """
+    Returns a dispersion score in [0,1].
+
+    Combines:
+      - entropy of gap distribution
+      - coefficient of variation (CV) of gaps
+      - clustering reward
+      - asymmetry reward
+      - penalty for modular patterns
+    """
+
+    if not intruder_positions or len(intruder_positions) < 2:
+        return 0.0
+
+    positions = sorted(intruder_positions)
+
+    # -------------------------------------------------
+    # GAP ANALYSIS
+    # -------------------------------------------------
+    gaps = [positions[i+1] - positions[i] for i in range(len(positions)-1)]
+
+    if not gaps:
+        return 0.0
+
+    mean_gap = sum(gaps) / len(gaps)
+
+    # --- CV ---
+    variance = sum((g - mean_gap)**2 for g in gaps) / len(gaps)
+    std = variance ** 0.5
+    cv = std / mean_gap if mean_gap > 0 else 0.0
+    cv_score = min(1.0, cv)
+
+    # --- ENTROPY ---
+    from math import log2
+    total_gap = sum(gaps)
+    probs = [g / total_gap for g in gaps if g > 0]
+
+    entropy = -sum(p * log2(p) for p in probs)
+    max_entropy = log2(len(gaps)) if len(gaps) > 1 else 1
+    entropy_score = entropy / max_entropy if max_entropy > 0 else 0.0
+
+    # -------------------------------------------------
+    # CLUSTER REWARD (small local clusters)
+    # -------------------------------------------------
+    small_gaps = sum(1 for g in gaps if g <= mean_gap * 0.6)
+    cluster_score = small_gaps / len(gaps)
+
+    # -------------------------------------------------
+    # ASYMMETRY REWARD
+    # -------------------------------------------------
+    midpoint = total_sentences / 2
+    left = sum(1 for p in positions if p < midpoint)
+    right = len(positions) - left
+    asymmetry_score = abs(left - right) / len(positions)
+
+    # -------------------------------------------------
+    # MODULAR PENALTY (e.g., every 4 sentences)
+    # -------------------------------------------------
+    mod_penalty = 0.0
+    for base in (3, 4, 5):
+        remainders = [p % base for p in positions]
+        most_common = max(remainders.count(r) for r in set(remainders))
+        if most_common / len(positions) > 0.75:
+            mod_penalty = 0.5
+            break
+
+    # -------------------------------------------------
+    # FINAL SCORE
+    # -------------------------------------------------
+    score = (
+        0.30 * entropy_score +
+        0.30 * cv_score +
+        0.20 * cluster_score +
+        0.20 * asymmetry_score
+    )
+
+    score -= mod_penalty
+    score = max(0.0, min(1.0, score))
+
+    return score
 
 def api_detect_outlier_sentences(hybrid_paragraph):
     """
@@ -383,25 +612,48 @@ def compute_detection_rate(flagged_numbers, true_intruder_numbers):
 def find_obscure_words(text, freq_ranks, num_candidates=NUM_CANDIDATE_OBSCURE):
     """
     Return up to num_candidates obscure words (rarest first).
-    We'll later attempt to find synonyms for these and replace
-    up to NUM_WORDS_TO_REPLACE of them.
+
+    Improvements:
+      - Skip likely misspellings (must exist in freq_ranks)
+      - Skip ultra-rare tokens (stability filter)
+      - Log skipped words for transparency
     """
+
     tokens = tokenize_words_lower(text)
     counts = Counter(tokens)
+
     candidates = []
+    skipped_misspell = 0
+    skipped_ultrarare = 0
+
+    ULTRA_RARE_CAP = 500_000  # adjust if needed
 
     for w, c in counts.items():
+
         if len(w) < 4:
             continue
+
         if w in STOPWORDS or w in AVOID_WORDS:
             continue
+
         if "'" in w:
-            # skip possessives / contracted forms like "teacher's"
+            continue  # skip possessives / contractions
+
+        rank = freq_ranks.get(w, None)
+
+        # --- Skip likely misspellings ---
+        if rank is None:
+            skipped_misspell += 1
             continue
-        rank = freq_ranks.get(w, 10**9)  # unseen = very rare
+
+        # --- Skip ultra-rare unstable tokens ---
+        if rank > ULTRA_RARE_CAP:
+            skipped_ultrarare += 1
+            continue
+
         candidates.append((rank, w))
 
-    # sort by rarity: highest rank first (rarest)
+    # Sort by rarity (highest rank = rarest first)
     candidates.sort(key=lambda x: x[0], reverse=True)
 
     result = []
@@ -410,6 +662,11 @@ def find_obscure_words(text, freq_ranks, num_candidates=NUM_CANDIDATE_OBSCURE):
             result.append(w)
         if len(result) >= num_candidates:
             break
+
+    if skipped_misspell > 0:
+        print(f"🔎 Skipped {skipped_misspell} likely misspellings.")
+    if skipped_ultrarare > 0:
+        print(f"🔎 Skipped {skipped_ultrarare} ultra-rare tokens.")
 
     return result
 
@@ -943,13 +1200,6 @@ def compute_quarters(n_sentences):
 
 
 def insert_intruders_into_sentences(sentences):
-    """
-    Adversarial intruder placement with:
-      - dynamic intruder count
-      - short-text protection
-      - safe clustering
-      - API-based evaluation
-    """
 
     if not sentences:
         return sentences, [], []
@@ -957,13 +1207,8 @@ def insert_intruders_into_sentences(sentences):
     original_sentences = list(sentences)
     n = len(original_sentences)
 
-    # ----------------------------------------
-    # STEP 1 — Generate intruders dynamically
-    # ----------------------------------------
-
     quarters = compute_quarters(n)
 
-    # If text too short to generate intruders, return unchanged
     if not quarters:
         print("⚠️ Text too short for intruders — skipping insertion.")
         return original_sentences, [], []
@@ -985,95 +1230,43 @@ def insert_intruders_into_sentences(sentences):
         existing_for_generation.append(intruder)
         intruder_index += 1
 
-    num_intruders = len(intruder_texts)
-
-    if num_intruders == 0:
-        print("⚠️ No intruders generated — returning original.")
+    if not intruder_texts:
         return original_sentences, [], []
 
-    # ----------------------------------------
-    # STEP 2 — Placement retries
-    # ----------------------------------------
-
+    # -------------------------------------------------
+    # SCORING TRACKERS
+    # -------------------------------------------------
     best_candidate = None
+    best_combined_score = -1
     best_detection_rate = 1.0
+    best_dispersion_score = 0.0
 
     for attempt in range(1, MAX_PARAGRAPH_RETRIES + 1):
 
         print("\n======================================")
-        print(f"🧠 Paragraph placement attempt {attempt}")
+        print(f"🎲 Paragraph placement attempt {attempt}")
         print("======================================")
 
-        augmented = list(original_sentences)
-
-        available_positions = list(range(1, len(augmented)))
-
-        # If not enough insertion points, skip placement
-        if len(available_positions) < num_intruders:
-            print("⚠️ Not enough insertion points — skipping intruders.")
-            return original_sentences, [], []
-
-        # ----------------------------------------
-        # Controlled clustering
-        # ----------------------------------------
-
-        if random.random() < 0.4 and num_intruders >= 2:
-
-            cluster_size = random.choice([2, 3])
-            cluster_size = min(cluster_size, num_intruders)
-
-            # Ensure valid slicing
-            if len(available_positions) > cluster_size:
-                cluster_start = random.choice(
-                    available_positions[:-cluster_size]
-                )
-                cluster_positions = [
-                    cluster_start + i for i in range(cluster_size)
-                ]
-            else:
-                cluster_positions = random.sample(
-                    available_positions,
-                    cluster_size
-                )
-
-            remaining = num_intruders - cluster_size
-
-            other_positions = [
-                p for p in available_positions
-                if p not in cluster_positions
-            ]
-
-            random_positions = (
-                random.sample(other_positions, remaining)
-                if remaining > 0
-                else []
+        try:
+            augmented = api_place_intruders(
+                original_sentences,
+                intruder_texts
             )
-
-            insertion_points = sorted(cluster_positions + random_positions)
-
-        else:
-            insertion_points = sorted(
-                random.sample(available_positions, num_intruders)
-            )
-
-        # Insert from highest index downward
-        for idx, intr_text in sorted(
-            zip(insertion_points, intruder_texts),
-            key=lambda x: x[0],
-            reverse=True
-        ):
-            augmented.insert(idx, intr_text)
+        except Exception as e:
+            print(f"⚠️ Placement API failed: {e}")
+            continue
 
         pdf_intruder_numbers = get_pdf_intruder_numbers_from_augmented(
             augmented,
             intruder_texts
         )
 
-        hybrid_paragraph = build_unified_paragraph(augmented)
+        dispersion_score = spacing_irregularity_score(
+            pdf_intruder_numbers,
+            total_sentences=len(augmented)
+        )
 
-        # ----------------------------------------
-        # STEP 3 — API detection
-        # ----------------------------------------
+        hybrid_paragraph = build_unified_paragraph(augmented)
 
         flagged_numbers = api_detect_outlier_sentences(hybrid_paragraph)
 
@@ -1082,30 +1275,50 @@ def insert_intruders_into_sentences(sentences):
             pdf_intruder_numbers
         )
 
+        combined_score = (
+            (1 - detection_rate) * 0.70 +
+            dispersion_score * 0.30
+        )
+
         print(f"📊 Detection rate: {detection_rate:.2f}")
+        print(f"📐 Dispersion score: {dispersion_score:.3f}")
+        print(f"⭐ Combined score: {combined_score:.3f}")
         print(f"🔎 Flagged: {flagged_numbers}")
         print(f"🎯 True intruders: {pdf_intruder_numbers}")
 
-        if detection_rate < best_detection_rate:
-            best_detection_rate = detection_rate
+        # ----------------------------
+        # Track best candidate
+        # ----------------------------
+        if combined_score > best_combined_score:
+            best_combined_score = combined_score
             best_candidate = (augmented, pdf_intruder_numbers)
+            best_detection_rate = detection_rate
+            best_dispersion_score = dispersion_score
 
-        if detection_rate <= MAX_INTRUDER_DETECTION_RATE:
-            print("✅ Paragraph accepted.")
+        # ----------------------------
+        # Early acceptance
+        # ----------------------------
+        if (
+            detection_rate <= MAX_INTRUDER_DETECTION_RATE and
+            dispersion_score >= MIN_DISPERSION_SCORE
+        ):
+            print("✅ Paragraph accepted (meets detection + dispersion threshold).")
             return augmented, pdf_intruder_numbers, intruder_texts
 
-    # ----------------------------------------
-    # STEP 4 — Fallback to best candidate
-    # ----------------------------------------
-
+    # -------------------------------------------------
+    # Fallback to best candidate
+    # -------------------------------------------------
     if best_candidate:
         print(
-            f"⚠️ No paragraph met threshold. "
-            f"Using best candidate (rate={best_detection_rate:.2f})."
+            f"\n🏆 Selecting best candidate "
+            f"(detect={best_detection_rate:.2f}, "
+            f"dispersion={best_dispersion_score:.3f}, "
+            f"combined={best_combined_score:.3f})"
         )
         return best_candidate[0], best_candidate[1], intruder_texts
 
     raise RuntimeError("Intruder placement failed completely.")
+    
 # ====================================================
 # PDF GENERATION (COMBINED TEST)
 # ====================================================

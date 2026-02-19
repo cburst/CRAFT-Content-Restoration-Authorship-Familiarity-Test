@@ -93,6 +93,11 @@ def generate_valid_text(original_text, main_idea):
         f"ORIGINAL TEXT (for context only):\n{original_text}"
     )
 
+    best_text = None
+    best_score = -1
+    best_sents = 0
+    best_words = 0
+
     for attempt in range(1, MAX_RETRIES + 1):
         print(f"    → Generation attempt {attempt}...")
         text = llm_chat(base_prompt)
@@ -100,21 +105,35 @@ def generate_valid_text(original_text, main_idea):
         sents = count_sentences(text)
         words = count_words(text)
 
+        passes = (sents >= MIN_SENTENCES and words >= MIN_WORDS)
+
         print(
             f"      sentences: {sents} | words: {words} "
-            f"{'✓ PASS' if (sents >= MIN_SENTENCES and words >= MIN_WORDS) else '✗ FAIL'}"
+            f"{'✓ PASS' if passes else '✗ FAIL'}"
         )
 
-        if sents >= MIN_SENTENCES and words >= MIN_WORDS:
+        # Scoring: how close are we?
+        score = min(sents / MIN_SENTENCES, 1.0) + min(words / MIN_WORDS, 1.0)
+
+        if score > best_score:
+            best_score = score
+            best_text = text
+            best_sents = sents
+            best_words = words
+
+        if passes:
             print("      ✓ Constraints satisfied\n")
             return text
 
         time.sleep(1)
 
-    raise RuntimeError(
-        f"Failed after {MAX_RETRIES} attempts "
-        f"(last: {sents} sentences, {words} words)"
+    # ---- FALLBACK MODE ----
+    print(
+        f"⚠️ Using best candidate after {MAX_RETRIES} attempts "
+        f"(sentences={best_sents}, words={best_words})\n"
     )
+
+    return best_text
 
 # =========================
 # TSV processing
