@@ -20,6 +20,9 @@ from weasyprint import HTML
 import nltk
 from nltk.stem import SnowballStemmer
 from nltk.tokenize import sent_tokenize
+from sklearn.cluster import KMeans
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 
 # Ensure NLTK punkt tokenizer
 try:
@@ -378,23 +381,20 @@ def api_place_intruders(original_sentences, intruder_sentences):
     )
 
     system_prompt = (
-        "You are a discourse editor.\n\n"
-        "Your task is ONLY to decide where to insert intruder sentences.\n\n"
-        "Return insertion positions using this exact format:\n"
+        "You are selecting insertion points for intruder sentences.\n\n"
+        "Return insertion positions using exactly this format:\n"
         "I1 -> after O3\n"
         "I2 -> after O7\n\n"
-        "Rules:\n"
-        "- Each intruder must appear exactly once\n"
-        "- Do NOT reorder original sentences\n"
-        "- Avoid evenly spaced placements\n"
-        "- Prefer asymmetry and irregular spacing\n"
-        "- Small clusters (2 close together) are acceptable\n"
-        "- Do NOT create simple arithmetic patterns\n"
-        "- Positions should look natural and unpredictable\n"
-        "- Return ONLY the mapping lines\n"
-        "- Do NOT explain anything"
+        "Goal:\n"
+        "Place the intruders so that test-takers cannot guess them based on regular spacing.\n\n"
+        "Spacing rules:\n"
+        "- Avoid equal or evenly spaced gaps\n"
+        "- Prefer highly unequal distances between insertions\n"
+        "- Either cluster some intruders close together OR spread them very far apart\n"
+        "- The distances between insertions should not form a simple pattern\n\n"
+        "Return ONLY the mapping lines. Do NOT explain."
     )
-    
+
     user_prompt = (
         "ORIGINAL SENTENCES:\n"
         f"{numbered_original}\n\n"
@@ -442,20 +442,6 @@ def api_place_intruders(original_sentences, intruder_sentences):
 
         used_positions.add(orig_idx)
         placements.append((intr_idx, orig_idx))
-
-    # --------------------------------------------------
-    # Detect evenly spaced pattern (anti-cheating)
-    # --------------------------------------------------
-
-    sorted_positions = sorted(orig_idx for _, orig_idx in placements)
-
-    if len(sorted_positions) >= 3:
-        diffs = [
-            sorted_positions[i+1] - sorted_positions[i]
-            for i in range(len(sorted_positions) - 1)
-        ]
-        if len(set(diffs)) == 1:
-            raise RuntimeError("Even spacing pattern detected — rejecting.")
 
     # --------------------------------------------------
     # Perform deterministic insertion
@@ -995,21 +981,20 @@ def transform_text_with_synonyms(text, freq_ranks):
 
 def generate_intruder_sentence(essay_section_sentences, existing_sentences, intruder_index):
     """
-    Generate one plausible intruder sentence with:
+    Robust intruder generator with:
 
-      - relaxed length window (75%–125%)
-      - best-candidate tracking
-      - primary + fallback prompts
-      - if no perfect candidate → return best seen
-      - if nothing usable → HARD FAIL
-
-    This function will raise RuntimeError if no intruder can be generated.
+      - Progressive relaxation
+      - Strong discourse marker suppression
+      - Best-candidate fallback
+      - No hard crash
     """
 
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY missing — cannot generate intruders.")
 
-    # ---------- section statistics ----------
+    # --------------------------------------------------
+    # Section statistics
+    # --------------------------------------------------
     lengths, densities = [], []
     for s in essay_section_sentences:
         tokens = tokenize_words_lower(s)
@@ -1019,44 +1004,28 @@ def generate_intruder_sentence(essay_section_sentences, existing_sentences, intr
         content = [t for t in tokens if t not in STOPWORDS]
         densities.append(len(content) / len(tokens))
 
-    avg_len = int(sum(lengths) / max(1, len(lengths)))
+    avg_len = max(8, int(sum(lengths) / max(1, len(lengths))))
     avg_density = sum(densities) / max(1, len(densities))
-
-    # ---------- relaxed constraints ----------
-    CONTENT_RATIO_TOLERANCE = 0.20
-    min_density = max(0.0, avg_density - CONTENT_RATIO_TOLERANCE)
 
     min_len = max(6, int(avg_len * 0.75))
     max_len = int(avg_len * 1.25)
+    min_density = max(0.0, avg_density - 0.20)
 
-    prompts = [
-        {
-            "label": "primary",
-            "system": (
-                "You are a careful academic writing assistant.\n\n"
-                "Write ONE detailed sentence that could appear in this essay section.\n\n"
-                f"Requirements:\n"
-                f"1) {min_len}–{max_len} words\n"
-                "2) Similar academic level and amount of detail\n"
-                "3) Avoid discourse markers\n"
-                "4) Do NOT repeat or closely paraphrase any existing sentence\n"
-                "5) Output ONE sentence only"
-            )
-        },
-        {
-            "label": "fallback",
-            "system": (
-                "You are a careful academic writing assistant.\n\n"
-                "Write ONE detailed academic sentence related to this essay section.\n\n"
-                f"Requirements:\n"
-                f"1) {min_len}–{max_len} words\n"
-                "2) Comparable informational density\n"
-                "3) Avoid generic filler\n"
-                "4) Do NOT repeat any existing sentence\n"
-                "5) Output ONE sentence only"
-            )
-        }
-    ]
+    # --------------------------------------------------
+    # Discourse marker suppression
+    # --------------------------------------------------
+    DISCOURSE_MARKERS = {
+        "furthermore", "moreover", "however", "therefore",
+        "overall", "in conclusion", "in summary",
+        "additionally", "consequently"
+    }
+
+    def starts_with_discourse_marker(text):
+        first_words = " ".join(text.lower().split()[:2])
+        for marker in DISCOURSE_MARKERS:
+            if first_words.startswith(marker):
+                return True
+        return False
 
     existing_norms = {normalize_sentence(s) for s in existing_sentences}
 
@@ -1064,139 +1033,230 @@ def generate_intruder_sentence(essay_section_sentences, existing_sentences, intr
     best_score = -1
     MAX_ATTEMPTS = 8
 
-    for prompt_cfg in prompts:
+    system_prompt = (
+        "You are a careful academic writing assistant.\n\n"
+        "Write ONE sentence that could plausibly appear in this paragraph section.\n\n"
+        "The sentence must:\n"
+        "- Add a concrete detail, clarification, or implication\n"
+        "- Match the academic level\n"
+        "- Avoid discourse markers (no 'Furthermore', 'However', etc.)\n"
+        "- Stand alone grammatically\n"
+        "- Be original\n\n"
+        "Output ONE sentence only."
+    )
 
-        if prompt_cfg["label"] == "fallback":
-            print(f"\n🔁 Switching to fallback intruder prompt for section {intruder_index}")
+    for attempt in range(1, MAX_ATTEMPTS + 1):
 
-        for attempt in range(1, MAX_ATTEMPTS + 1):
+        print("\n----------------------------")
+        print(f"🔍 Intruder attempt {attempt} for section {intruder_index}")
 
-            print("\n----------------------------")
-            print(
-                f"🔍 OpenAI intruder attempt {attempt} "
-                f"for section {intruder_index} ({prompt_cfg['label']})"
+        # --------------------------------------------------
+        # Progressive relaxation
+        # --------------------------------------------------
+        relax = (attempt - 1) / (MAX_ATTEMPTS - 1)
+
+        min_len_adj = max(5, int(min_len * (1 - 0.20 * relax)))
+        max_len_adj = int(max_len * (1 + 0.20 * relax))
+
+        density_adj = max(0.40, min_density - (0.15 * relax))
+        similarity_threshold = min(0.90, 0.75 + (0.15 * relax))
+
+        try:
+            raw = llm_chat(
+                system_prompt=system_prompt,
+                user_prompt="Essay section:\n" + " ".join(essay_section_sentences),
+                temperature=0.70,
+                max_tokens=200
             )
 
-            try:
-                raw = llm_chat(
-                    system_prompt=prompt_cfg["system"],
-                    user_prompt="Essay section:\n" + " ".join(essay_section_sentences),
-                    temperature=0.75,
-                    max_tokens=220
-                )
+            candidate = raw.strip("'\"")
+            tokens = tokenize_words_lower(candidate)
 
-                candidate = raw.strip("'\"")
-                tokens = tokenize_words_lower(candidate)
+            if not tokens:
+                continue
 
-                if not tokens:
-                    print("❌ Rejected — empty output.")
-                    continue
+            wc = len(tokens)
+            content_wc = sum(1 for t in tokens if t not in STOPWORDS)
+            density = content_wc / wc
+            norm = normalize_sentence(candidate)
 
-                wc = len(tokens)
-                content_wc = sum(1 for t in tokens if t not in STOPWORDS)
-                density = content_wc / wc
-                norm = normalize_sentence(candidate)
+            print(f"📏 Words: {wc} (target {min_len_adj}-{max_len_adj})")
+            print(f"📊 Density: {density:.2f} (min {density_adj:.2f})")
 
-                preview = " ".join(candidate.split()[:6])
-                if len(candidate.split()) > 6:
-                    preview += "…"
+            # --------------------------------------------------
+            # Hard reject: discourse marker start
+            # --------------------------------------------------
+            if starts_with_discourse_marker(candidate):
+                print("❌ Rejected — discourse marker start.")
+                continue
 
-                print(f"✂️ Preview: \"{preview}\"")
-                print(
-                    f"📏 Word count: {wc} (target {min_len}–{max_len})\n"
-                    f"📊 Content ratio: {density:.2f} (min {min_density:.2f})"
-                )
+            # --------------------------------------------------
+            # Similarity check (single evaluation)
+            # --------------------------------------------------
+            too_similar = intruder_too_similar(
+                candidate,
+                existing_sentences,
+                threshold=similarity_threshold
+            )
 
-                # ----- scoring -----
-                length_score = 1 - abs(wc - avg_len) / max(1, avg_len)
-                density_score = min(1, density / max(0.0001, avg_density))
-                similarity_penalty = 0
+            # --------------------------------------------------
+            # Score candidate
+            # --------------------------------------------------
+            length_score = 1 - abs(wc - avg_len) / max(1, avg_len)
+            density_score = min(1, density / max(0.0001, avg_density))
+            similarity_penalty = 0.5 if too_similar else 0
 
-                if norm in existing_norms:
-                    similarity_penalty += 0.5
+            score = length_score + density_score - similarity_penalty
 
-                if intruder_too_similar(candidate, existing_sentences):
-                    similarity_penalty += 0.5
+            if score > best_score:
+                best_score = score
+                best_candidate = candidate
 
-                score = length_score + density_score - similarity_penalty
+            # --------------------------------------------------
+            # Acceptance condition
+            # --------------------------------------------------
+            if (
+                min_len_adj <= wc <= max_len_adj and
+                density >= density_adj and
+                norm not in existing_norms and
+                not too_similar
+            ):
+                print(f"✅ Accepted intruder (relax {relax:.2f})")
+                return candidate
 
-                if score > best_score:
-                    best_score = score
-                    best_candidate = candidate
+            print("❌ Rejected — constraints not met.")
 
-                # ----- strict acceptance -----
-                if (
-                    min_len <= wc <= max_len and
-                    density >= min_density and
-                    norm not in existing_norms and
-                    not intruder_too_similar(candidate, existing_sentences)
-                ):
-                    print(f"✅ Accepted intruder for section {intruder_index} ({prompt_cfg['label']})")
-                    return candidate
+        except Exception as e:
+            print(f"⚠️ Intruder error: {e}")
 
-                print("❌ Rejected — did not meet strict constraints.")
-
-            except Exception as e:
-                print(f"⚠️ Intruder error: {e}")
-
-    # ----- soft fallback -----
+    # --------------------------------------------------
+    # Guaranteed fallback
+    # --------------------------------------------------
     if best_candidate:
-        print("⚠️ No perfect intruder — using best imperfect candidate.")
+        print("⚠️ Using best imperfect intruder.")
         return best_candidate
 
-    # ----- HARD FAIL -----
+def get_sentence_embeddings(sentences):
+    """
+    Returns a list of embedding vectors for the given sentences.
+    Uses OpenAI embeddings endpoint.
+    """
+
+    if not sentences:
+        return []
+
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": "text-embedding-3-small",  # fast + cheap
+        "input": sentences
+    }
+
+    last_error = None
+
+    for attempt in range(1, OPENAI_MAX_RETRIES + 1):
+
+        print(f"\n⏱ Embedding call start (attempt {attempt}): {time.strftime('%H:%M:%S')}")
+        api_start = time.perf_counter()
+
+        try:
+            r = requests.post(
+                "https://api.openai.com/v1/embeddings",
+                headers=headers,
+                json=payload,
+                timeout=60
+            )
+
+            if r.status_code in (429, 500, 502, 503, 504):
+                raise requests.HTTPError(
+                    f"Transient embedding error {r.status_code}",
+                    response=r
+                )
+
+            r.raise_for_status()
+
+            elapsed = time.perf_counter() - api_start
+            print(
+                f"⏱ Embedding call end: {time.strftime('%H:%M:%S')} "
+                f"(elapsed {elapsed:.2f}s)"
+            )
+
+            data = r.json()
+
+            # Preserve order
+            embeddings = [item["embedding"] for item in data["data"]]
+
+            return embeddings
+
+        except Exception as e:
+            elapsed = time.perf_counter() - api_start
+            print(f"⚠️ Embedding attempt {attempt} failed after {elapsed:.2f}s: {e}")
+
+            last_error = e
+
+            if attempt < OPENAI_MAX_RETRIES:
+                wait = 2 ** attempt
+                print(f"⏳ Retrying in {wait}s...")
+                time.sleep(wait)
+
     raise RuntimeError(
-        f"Failed to generate usable intruder sentence for section {intruder_index}"
+        f"Embedding call failed after {OPENAI_MAX_RETRIES} attempts: {last_error}"
     )
 
 
-def compute_quarters(n_sentences):
-    """
-    Dynamically compute quarters based on text length.
+def compute_quarters(sentences):
 
-    Rules:
-      - Minimum quarter size = MIN_QUARTER_SIZE
-      - Maximum quarters = NUM_INTRUDERS
-      - If text is too short, reduce number of quarters
-      - Each quarter must have at least MIN_QUARTER_SIZE sentences
+    n = len(sentences)
 
-    Returns:
-        list of (start, end) index tuples (end-exclusive)
-    """
-
-    if n_sentences < MIN_QUARTER_SIZE:
+    if n < MIN_QUARTER_SIZE:
         return []
 
-    # Maximum number of possible quarters given minimum size
-    max_possible_quarters = n_sentences // MIN_QUARTER_SIZE
+    max_possible = n // MIN_QUARTER_SIZE
+    num_segments = min(NUM_INTRUDERS, max_possible)
 
-    # Cap by NUM_INTRUDERS
-    num_quarters = min(NUM_INTRUDERS, max_possible_quarters)
+    if num_segments <= 1:
+        return [(0, n)]
 
-    if num_quarters == 0:
-        return []
+    try:
+        embeddings = np.array(get_sentence_embeddings(sentences))
 
-    base_size = n_sentences // num_quarters
-    remainder = n_sentences % num_quarters
+        if len(embeddings) != n:
+            raise RuntimeError("Embedding length mismatch.")
 
-    quarters = []
+        similarities = []
+        for i in range(n - 1):
+            sim = cosine_similarity(
+                embeddings[i].reshape(1, -1),
+                embeddings[i + 1].reshape(1, -1)
+            )[0][0]
+            similarities.append(sim)
+
+        split_points = sorted(
+            range(len(similarities)),
+            key=lambda i: similarities[i]
+        )[: num_segments - 1]
+
+        split_points = sorted(split_points)
+
+    except Exception as e:
+        print("⚠️ Embeddings failed — reverting to equal segmentation.")
+        # ---- SAFE FALLBACK ----
+        base_size = n // num_segments
+        split_points = [base_size * (i + 1) - 1 for i in range(num_segments - 1)]
+
+    # ---- Build segments ----
+    segments = []
     start = 0
-
-    for i in range(num_quarters):
-        size = base_size + (1 if i < remainder else 0)
-
-        # Enforce minimum size
-        if size < MIN_QUARTER_SIZE:
-            size = MIN_QUARTER_SIZE
-
-        end = min(n_sentences, start + size)
-
-        if end - start >= MIN_QUARTER_SIZE:
-            quarters.append((start, end))
-
+    for sp in split_points:
+        end = sp + 1
+        segments.append((start, end))
         start = end
+    segments.append((start, n))
 
-    return quarters
+    return segments
 
 
 def insert_intruders_into_sentences(sentences):
@@ -1205,9 +1265,8 @@ def insert_intruders_into_sentences(sentences):
         return sentences, [], []
 
     original_sentences = list(sentences)
-    n = len(original_sentences)
-
-    quarters = compute_quarters(n)
+    
+    quarters = compute_quarters(original_sentences)
 
     if not quarters:
         print("⚠️ Text too short for intruders — skipping insertion.")
@@ -1317,7 +1376,26 @@ def insert_intruders_into_sentences(sentences):
         )
         return best_candidate[0], best_candidate[1], intruder_texts
 
-    raise RuntimeError("Intruder placement failed completely.")
+    print("⚠️ All placement attempts failed — using random fallback.")
+
+    augmented = list(original_sentences)
+    available_positions = list(range(1, len(augmented)))
+
+    if len(available_positions) >= len(intruder_texts):
+        insertion_points = random.sample(available_positions, len(intruder_texts))
+        insertion_points.sort(reverse=True)
+
+        for idx, intr in zip(insertion_points, intruder_texts):
+            augmented.insert(idx, intr)
+
+        pdf_intruder_numbers = get_pdf_intruder_numbers_from_augmented(
+            augmented,
+            intruder_texts
+        )
+
+        return augmented, pdf_intruder_numbers, intruder_texts
+
+    return original_sentences, [], []
     
 # ====================================================
 # PDF GENERATION (COMBINED TEST)
@@ -1364,8 +1442,8 @@ def generate_pdf(student_id, name, sentences, replacements, pdf_dir=PDF_DIR):
         f"<div class='header'>Name: {esc_name}<br>Student Number: {esc_number}</div>",
         "<div class='header'>Sentence Intruders & Synonym Replacements</div>",
         "<div class='instructions'>",
-        "<b>Extra sentences have been added. Circle the added sentence numbers.<br>",
-        f"Five words have been replaced. Find the replacements and provide the originals.</b>",
+        "<b>Extra sentences have been added. Circle the added sentence numbers. Lose one point for incorrect guesses. <br>",
+        f"Five words have been replaced. Find the replacements and provide the originals. No penalty for guessing.</b>",
         "</div>",
         f"<div class='paragraph'>{esc_paragraph}</div>",
         "<table class='syn-table'>",

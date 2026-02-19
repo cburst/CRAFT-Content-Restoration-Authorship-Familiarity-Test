@@ -90,10 +90,15 @@ os.chdir(tsv_dir)
 log(f"Changed directory to TSV location: {tsv_dir}")
 
 if orig_name != "students.tsv":
+
     if os.path.exists("students.tsv"):
-        raise SystemExit("❌ students.tsv already exists — aborting")
+        log("⚠️ students.tsv already exists — previous run likely failed.")
+        os.remove("students.tsv")
+        log("✔ Removed stale students.tsv")
+
     os.rename(orig_name, "students.tsv")
     log(f"Renamed {orig_name} → students.tsv")
+
 else:
     log("Latest TSV is already named students.tsv")
 
