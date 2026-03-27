@@ -116,14 +116,13 @@ def ensure_api_key():
         wraplength=440
     )
     link_label.pack(anchor="w", pady=(0, 10))
-
     link_label.bind("<Button-1>", lambda e: webbrowser.open(api_url))
 
+    # --- input ---
     entry_var = tk.StringVar()
-
     entry = tb.Entry(frame, textvariable=entry_var)
     entry.pack(fill=X, pady=(0, 10))
-    entry.focus()  # 🔥 nice UX touch
+    entry.focus()
 
     result = {"key": None}
 
@@ -131,16 +130,19 @@ def ensure_api_key():
         result["key"] = entry_var.get()
         dialog.destroy()
 
-    # 🔥 X button = cancel
+    # X button = cancel
     dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
 
-    # --- single button (mac-style clean UX) ---
+    # Enter key = submit
+    dialog.bind("<Return>", lambda e: submit())
+
+    # --- OK button (FIXED rendering) ---
     tb.Button(
         frame,
         text="OK",
         command=submit,
         bootstyle="success"
-    ).pack(pady=(5, 0))
+    ).pack(fill=X, pady=(5, 0))
 
     dialog.grab_set()
     dialog.wait_window()
