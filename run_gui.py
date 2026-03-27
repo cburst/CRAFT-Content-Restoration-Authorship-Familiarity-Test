@@ -86,7 +86,7 @@ def ensure_api_key():
     # -----------------------------
     dialog = tb.Toplevel()
     dialog.title("Setup API Key")
-    dialog.geometry("500x240")
+    dialog.geometry("500x260")
     dialog.resizable(False, False)
 
     frame = tb.Frame(dialog, padding=20)
@@ -136,14 +136,24 @@ def ensure_api_key():
     # Enter key = submit
     dialog.bind("<Return>", lambda e: submit())
 
-    # --- OK button (FIXED rendering) ---
-    tb.Button(
-        frame,
+    # -----------------------------
+    # BUTTON FIX (REAL BUTTON)
+    # -----------------------------
+    button_frame = tb.Frame(frame)
+    button_frame.pack(fill=X, pady=(10, 0))
+
+    ok_button = tb.Button(
+        button_frame,
         text="OK",
         command=submit,
-        bootstyle="success"
-    ).pack(fill=X, pady=(5, 0))
+        bootstyle="success",
+        width=20
+    )
+    ok_button.pack(pady=5)
 
+    # -----------------------------
+    # MODAL
+    # -----------------------------
     dialog.grab_set()
     dialog.wait_window()
 
