@@ -130,26 +130,25 @@ def ensure_api_key():
         result["key"] = entry_var.get()
         dialog.destroy()
 
-    # X button = cancel
     dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
-
-    # Enter key = submit
     dialog.bind("<Return>", lambda e: submit())
 
     # -----------------------------
-    # BUTTON FIX (REAL BUTTON)
+    # BUTTON (THIS FIXES IT)
     # -----------------------------
-    button_frame = tb.Frame(frame)
-    button_frame.pack(fill=X, pady=(10, 0))
-
-    ok_button = tb.Button(
-        button_frame,
+    btn = tb.Button(
+        frame,
         text="OK",
         command=submit,
-        bootstyle="success",
-        width=20
+        bootstyle="success"
     )
-    ok_button.pack(pady=5)
+
+    btn.pack(
+        anchor="center",
+        pady=10,
+        ipadx=20,
+        ipady=6   # 🔥 THIS is the key fix
+    )
 
     # -----------------------------
     # MODAL
