@@ -273,7 +273,6 @@ tb.Label(content, textvariable=timer_var).pack()
 
 # --- STYLE (run once, safe to keep here) ---
 style = tb.Style()
-style.theme_use("clam")
 
 style.configure(
     "Custom.Horizontal.TProgressbar",
