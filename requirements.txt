@@ -1,0 +1,10 @@
+ttkbootstrap
+weasyprint
+pdf2image
+Pillow
+nltk
+requests
+rapidfuzz
+numpy
+scikit-learn
+PyPDF2
