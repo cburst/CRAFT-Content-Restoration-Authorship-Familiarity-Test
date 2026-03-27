@@ -96,7 +96,6 @@ def ensure_api_key():
         frame,
         text=(
             "An OpenAI API key is required to generate CRAFT tests.\n\n"
-            "This secret key allows this application to securely access ChatGPT.\n\n"
             "Your OpenAI account must have billing enabled for the API to work.\n\n"
             "Create an API key and set up billing here:"
         ),
@@ -104,7 +103,7 @@ def ensure_api_key():
         wraplength=440
     ).pack(anchor="w", pady=(0, 5))
 
-    # --- clickable URL ---
+    # --- clickable URL (same style as GitHub) ---
     api_url = "https://platform.openai.com/api-keys"
 
     link_label = tb.Label(
@@ -116,13 +115,12 @@ def ensure_api_key():
         wraplength=440
     )
     link_label.pack(anchor="w", pady=(0, 10))
+
     link_label.bind("<Button-1>", lambda e: webbrowser.open(api_url))
 
-    # --- input ---
     entry_var = tk.StringVar()
-    entry = tb.Entry(frame, textvariable=entry_var)
-    entry.pack(fill=X, pady=(0, 10))
-    entry.focus()
+
+    tb.Entry(frame, textvariable=entry_var).pack(fill=X, pady=(0, 20))
 
     result = {"key": None}
 
@@ -130,29 +128,14 @@ def ensure_api_key():
         result["key"] = entry_var.get()
         dialog.destroy()
 
-    dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
-    dialog.bind("<Return>", lambda e: submit())
+    def cancel():
+        dialog.destroy()
 
-    # -----------------------------
-    # BUTTON (THIS FIXES IT)
-    # -----------------------------
-    btn = tb.Button(
-        frame,
-        text="OK",
-        command=submit,
-        bootstyle="success"
-    )
+    btn_row = tb.Frame(frame)
+    btn_row.pack(fill=X)
 
-    btn.pack(
-        anchor="center",
-        pady=10,
-        ipadx=20,
-        ipady=6   # 🔥 THIS is the key fix
-    )
+    tb.Button(btn_row, text="OK", command=submit, bootstyle="success").pack(pady=5)
 
-    # -----------------------------
-    # MODAL
-    # -----------------------------
     dialog.grab_set()
     dialog.wait_window()
 
