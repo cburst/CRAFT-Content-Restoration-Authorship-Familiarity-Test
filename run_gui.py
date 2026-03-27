@@ -10,10 +10,107 @@ import gc
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 from tkinter import filedialog
+import tkinter as tk
 
 from app.hard_pipeline import run_hard_pipeline
 from app.real_pipeline import run_real_pipeline
 
+
+def load_shell_env():
+    try:
+        result = subprocess.run(
+            ["/bin/zsh", "-lc", "printenv OPENAI_API_KEY"],
+            capture_output=True,
+            text=True
+        )
+
+        if result.returncode != 0:
+            print("⚠️ Failed to load shell environment")
+            return
+
+        key = result.stdout.strip()
+        if key:
+            os.environ["OPENAI_API_KEY"] = key
+            print("🔑 OPENAI_API_KEY loaded from shell")
+
+    except Exception as e:
+        print("⚠️ Failed to load shell environment:", e)
+
+# 🔥 run immediately
+load_shell_env()
+
+def ensure_api_key():
+
+    # -----------------------------
+    # 1. Check environment (shell already loaded)
+    # -----------------------------
+    key = os.getenv("OPENAI_API_KEY")
+    if key:
+        return True
+
+    # -----------------------------
+    # 2. Try config file (~/.craft_api_key)
+    # -----------------------------
+    key_path = os.path.expanduser("~/.craft_api_key")
+
+    if os.path.exists(key_path):
+        try:
+            with open(key_path) as f:
+                key = f.read().strip()
+                if key:
+                    os.environ["OPENAI_API_KEY"] = key
+                    print("🔑 API key loaded from ~/.craft_api_key")
+                    return True
+        except Exception as e:
+            print("⚠️ Failed to read API key file:", e)
+
+    # -----------------------------
+    # 3. Prompt user (final fallback)
+    # -----------------------------
+    dialog = tb.dialogs.Querybox.get_string(
+        "Enter your OpenAI API Key.\n\n"
+        "Get one here:\n"
+        "https://platform.openai.com/api-keys\n\n"
+        "Paste it here. It will be saved securely on your computer.",
+        title="Setup API Key"
+    )
+
+    if not dialog:
+        tb.dialogs.Messagebox.show_error(
+            "API key is required to run this application.",
+            title="Missing API Key"
+        )
+        return False
+
+    # -----------------------------
+    # 4. Clean + validate input
+    # -----------------------------
+    key = dialog.strip().strip('"').strip("'")
+
+    if not key:
+        tb.dialogs.Messagebox.show_error(
+            "Invalid API key.",
+            title="Error"
+        )
+        return False
+
+    # -----------------------------
+    # 5. Save to file (secure permissions)
+    # -----------------------------
+    try:
+        with open(key_path, "w") as f:
+            f.write(key)
+        os.chmod(key_path, 0o600)  # 🔒 user-only access
+        print("🔑 API key saved to ~/.craft_api_key")
+    except Exception as e:
+        print("⚠️ Failed to save API key:", e)
+
+    # -----------------------------
+    # 6. Set environment
+    # -----------------------------
+    os.environ["OPENAI_API_KEY"] = key
+
+    return True
 
 # --------------------------------------------------
 # THREAD-SAFE UI HELPER
@@ -46,8 +143,9 @@ def open_file(path):
 # --------------------------------------------------
 
 app = tb.Window(themename="flatly")
-import tkinter as tk
-import os
+
+# 🔥 Check API key after GUI starts
+app.after(0, lambda: ensure_api_key())
 
 ICON_PATH = os.path.expanduser("~/CRAFTtests/icon.png")
 
@@ -257,6 +355,10 @@ def update_timer(start_time):
 
 def run_pipeline():
 
+    # 🔥 Ensure API key before running
+    if not ensure_api_key():
+        return
+
     input_file = file_var.get()
     mode = mode_var.get()
     testname = name_var.get().strip() or "test"
@@ -312,7 +414,6 @@ def run_pipeline():
             safe_ui(progress.stop)
             safe_ui(progress.configure, value=0)
 
-            # Build output string
             outputs = []
             if real_pdf:
                 outputs.append(os.path.basename(real_pdf))
@@ -325,20 +426,13 @@ def run_pipeline():
             safe_ui(status_var.set, f"✔ Done in {elapsed}s")
             safe_ui(timer_var.set, f"Output: {output_text}")
 
-            # 🔥 OPEN FILES
             if real_pdf:
                 safe_ui(open_file, real_pdf)
             if hard_pdf:
                 safe_ui(open_file, hard_pdf)
 
-            # 🔥 CLEANUP (helps prevent lingering state)
             time.sleep(0.2)
             gc.collect()
-
-            # 🔍 DEBUG (optional, safe to keep)
-            for t in threading.enumerate():
-                if t is not threading.current_thread():
-                    print("Alive thread:", t)
 
         except Exception as e:
             timer_running = False
