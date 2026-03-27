@@ -27,28 +27,25 @@ from sklearn.metrics.pairwise import cosine_similarity
 # -----------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-NLTK_DIR = os.path.join(BASE_DIR, "data", "nltk_data")
-os.makedirs(NLTK_DIR, exist_ok=True)
-
-nltk.data.path.append(NLTK_DIR)
-
 def ensure_nltk():
     try:
         nltk.data.find("tokenizers/punkt")
     except LookupError:
-        nltk.download("punkt", download_dir=NLTK_DIR, quiet=True)
+        print("📦 Downloading punkt...")
+        nltk.download("punkt", quiet=True)
 
     try:
         nltk.data.find("tokenizers/punkt_tab")
     except LookupError:
-        nltk.download("punkt_tab", download_dir=NLTK_DIR, quiet=True)
+        print("📦 Downloading punkt_tab...")
+        nltk.download("punkt_tab", quiet=True)
 
 ensure_nltk()
 
 INPUT_TSV = "students.tsv"   # student_id, name, text
 PDF_DIR = "PDFs-hybrid-synonym-intruders"
 ANSWER_KEY = "answer_key_hybrid_synonym_intruders.tsv"
-FREQ_FILE = os.path.join(BASE_DIR, "app", "data", "wiki_freq.txt")
+FREQ_FILE = os.path.join(BASE_DIR, "data", "wiki_freq.txt")
 
 NUM_INTRUDERS = 4            # one per quarter
 INTRUDER_SIMILARITY_BASE = 0.6	# Global intruder similarity base threshold
