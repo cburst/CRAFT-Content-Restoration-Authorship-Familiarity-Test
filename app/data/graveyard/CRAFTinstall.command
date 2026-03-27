@@ -12,6 +12,10 @@ function handle_error {
 }
 
 echo "🚀 Installing CRAFT..."
+echo ""
+echo "🔐 This installer may ask for your Mac password."
+echo "This is required for installing system tools (Homebrew)."
+echo ""
 
 # ----------------------------------
 # 1. Install Homebrew (if needed)
@@ -37,16 +41,9 @@ echo "✅ Homebrew ready"
 
 echo "📦 Installing system dependencies..."
 
-brew install \
-    git \
-    poppler \
-    cairo \
-    pango \
-    gdk-pixbuf \
-    libffi \
-    fontconfig \
-    python@3.11 \
-    python-tk@3.11
+brew unpin python@3.11 2>/dev/null || true
+brew install git poppler cairo pango gdk-pixbuf libffi fontconfig python@3.11 python-tk@3.11
+brew pin python@3.11
 
 # ----------------------------------
 # 3. Locate Python
@@ -133,3 +130,5 @@ echo ""
 echo "👉 Launch the app from Applications (CRAFT.app)"
 echo "👉 On first run, you will be prompted for your API key"
 echo ""
+echo "Press any key to close..."
+read -n 1

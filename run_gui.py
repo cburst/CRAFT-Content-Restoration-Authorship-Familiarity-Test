@@ -86,7 +86,7 @@ def ensure_api_key():
     # -----------------------------
     dialog = tb.Toplevel()
     dialog.title("Setup API Key")
-    dialog.geometry("500x260")
+    dialog.geometry("500x240")
     dialog.resizable(False, False)
 
     frame = tb.Frame(dialog, padding=20)
@@ -104,7 +104,7 @@ def ensure_api_key():
         wraplength=440
     ).pack(anchor="w", pady=(0, 5))
 
-    # --- clickable URL (same style as GitHub) ---
+    # --- clickable URL ---
     api_url = "https://platform.openai.com/api-keys"
 
     link_label = tb.Label(
@@ -121,7 +121,9 @@ def ensure_api_key():
 
     entry_var = tk.StringVar()
 
-    tb.Entry(frame, textvariable=entry_var).pack(fill=X, pady=(0, 10))
+    entry = tb.Entry(frame, textvariable=entry_var)
+    entry.pack(fill=X, pady=(0, 10))
+    entry.focus()  # 🔥 nice UX touch
 
     result = {"key": None}
 
@@ -129,14 +131,16 @@ def ensure_api_key():
         result["key"] = entry_var.get()
         dialog.destroy()
 
-    def cancel():
-        dialog.destroy()
+    # 🔥 X button = cancel
+    dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
 
-    btn_row = tb.Frame(frame)
-    btn_row.pack(fill=X)
-
-    tb.Button(btn_row, text="OK", command=submit, bootstyle="success").pack(side=LEFT)
-    tb.Button(btn_row, text="Cancel", command=cancel).pack(side=RIGHT)
+    # --- single button (mac-style clean UX) ---
+    tb.Button(
+        frame,
+        text="OK",
+        command=submit,
+        bootstyle="success"
+    ).pack(pady=(5, 0))
 
     dialog.grab_set()
     dialog.wait_window()
