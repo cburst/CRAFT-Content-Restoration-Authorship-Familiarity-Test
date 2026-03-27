@@ -15,6 +15,10 @@ import tkinter as tk
 from app.hard_pipeline import run_hard_pipeline
 from app.real_pipeline import run_real_pipeline
 
+import os
+
+# 🔥 Ensure Homebrew tools are available (GUI apps don't inherit PATH)
+os.environ["PATH"] = "/opt/homebrew/bin:/opt/homebrew/sbin:" + os.environ.get("PATH", "")
 
 def load_shell_env():
     try:
