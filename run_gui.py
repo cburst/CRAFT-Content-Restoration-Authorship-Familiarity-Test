@@ -9,6 +9,7 @@ import os
 import sys
 import time
 import subprocess
+import webbrowser
 
 # -----------------------------
 # FIX IMPORT PATH
@@ -78,19 +79,73 @@ def ensure_api_key():
         except:
             pass
 
-    dialog = tb.dialogs.Querybox.get_string(
-        "Enter your OpenAI API Key:\n\nhttps://platform.openai.com/api-keys",
-        title="Setup API Key"
-    )
+    import webbrowser
 
-    if not dialog:
+    # -----------------------------
+    # CUSTOM DIALOG (better UX)
+    # -----------------------------
+    dialog = tb.Toplevel()
+    dialog.title("Setup API Key")
+    dialog.geometry("500x260")
+    dialog.resizable(False, False)
+
+    frame = tb.Frame(dialog, padding=20)
+    frame.pack(fill=BOTH, expand=YES)
+
+    tb.Label(
+        frame,
+        text=(
+            "An OpenAI API key is required to generate CRAFT tests.\n\n"
+            "It allows this application to securely access the language model.\n\n"
+            "You can create one here:"
+        ),
+        justify=LEFT,
+        wraplength=440
+    ).pack(anchor="w", pady=(0, 5))
+
+    # clickable link button
+    tb.Button(
+        frame,
+        text="Open API Key Page",
+        bootstyle="link",
+        command=lambda: webbrowser.open("https://platform.openai.com/api-keys")
+    ).pack(anchor="w", pady=(0, 10))
+
+    entry_var = tk.StringVar()
+
+    tb.Entry(frame, textvariable=entry_var).pack(fill=X, pady=(0, 10))
+
+    result = {"key": None}
+
+    def submit():
+        result["key"] = entry_var.get()
+        dialog.destroy()
+
+    def cancel():
+        dialog.destroy()
+
+    btn_row = tb.Frame(frame)
+    btn_row.pack(fill=X)
+
+    tb.Button(btn_row, text="OK", command=submit, bootstyle="success").pack(side=LEFT)
+    tb.Button(btn_row, text="Cancel", command=cancel).pack(side=RIGHT)
+
+    dialog.grab_set()
+    dialog.wait_window()
+
+    # -----------------------------
+    # HANDLE RESULT
+    # -----------------------------
+    key = result["key"]
+
+    if not key:
         tb.dialogs.Messagebox.show_error(
             "API key is required.",
             title="Missing API Key"
         )
         return False
 
-    key = dialog.strip().strip('"').strip("'")
+    key = key.strip().strip('"').strip("'")
 
     if not key:
         return False
@@ -179,26 +234,46 @@ table_frame.columnconfigure(1, weight=1)
 table_frame.columnconfigure(2, weight=4)
 
 
-# --------------------------------------------------
-# FOOTER (GITHUB + CONTACT)
-# --------------------------------------------------
+# -----------------------------
+# FOOTER (CLICKABLE GITHUB)
+# -----------------------------
 
-footer_text = (
-    "GitHub:\n"
-    "https://github.com/cburst/CRAFT-Content-Restoration-Authorship-Familiarity-Test\n\n"
-    "Developed by Richard Rose (HUFS)\n"
-    "Contact: richard.rose@hufs.ac.kr"
-)
+footer_frame = tb.Frame(content)
+footer_frame.pack(fill=X, pady=(0, 15))
 
-footer_label = tb.Label(
-    content,
-    text=footer_text,
-    justify=LEFT,
+# GitHub label (title)
+tb.Label(
+    footer_frame,
+    text="GitHub:",
+    anchor="w"
+).pack(anchor="w")
+
+# Clickable link
+github_link = "https://github.com/cburst/CRAFT-Content-Restoration-Authorship-Familiarity-Test"
+
+link_label = tb.Label(
+    footer_frame,
+    text=github_link,
+    foreground="#4A90E2",
+    cursor="hand2",
     anchor="w",
     wraplength=540
 )
+link_label.pack(anchor="w", pady=(0, 10))
 
-footer_label.pack(fill=X, pady=(0, 15))
+link_label.bind("<Button-1>", lambda e: webbrowser.open(github_link))
+
+# Author + contact
+tb.Label(
+    footer_frame,
+    text=(
+        "Developed by Richard Rose (HUFS)\n"
+        "Contact: richard.rose@hufs.ac.kr"
+    ),
+    justify=LEFT,
+    anchor="w",
+    wraplength=540
+).pack(anchor="w")
 
 # -----------------------------
 # FILE PICKER
