@@ -82,7 +82,7 @@ def ensure_api_key():
     import webbrowser
 
     # -----------------------------
-    # CUSTOM DIALOG (better UX)
+    # CUSTOM DIALOG
     # -----------------------------
     dialog = tb.Toplevel()
     dialog.title("Setup API Key")
@@ -96,20 +96,28 @@ def ensure_api_key():
         frame,
         text=(
             "An OpenAI API key is required to generate CRAFT tests.\n\n"
-            "It allows this application to securely access the language model.\n\n"
-            "You can create one here:"
+            "This secret key allows this application to securely access ChatGPT.\n\n"
+            "Your OpenAI account must have billing enabled for the API to work.\n\n"
+            "Create an API key and set up billing here:"
         ),
         justify=LEFT,
         wraplength=440
     ).pack(anchor="w", pady=(0, 5))
 
-    # clickable link button
-    tb.Button(
+    # --- clickable URL (same style as GitHub) ---
+    api_url = "https://platform.openai.com/api-keys"
+
+    link_label = tb.Label(
         frame,
-        text="Open API Key Page",
-        bootstyle="link",
-        command=lambda: webbrowser.open("https://platform.openai.com/api-keys")
-    ).pack(anchor="w", pady=(0, 10))
+        text=api_url,
+        foreground="#4A90E2",
+        cursor="hand2",
+        anchor="w",
+        wraplength=440
+    )
+    link_label.pack(anchor="w", pady=(0, 10))
+
+    link_label.bind("<Button-1>", lambda e: webbrowser.open(api_url))
 
     entry_var = tk.StringVar()
 
