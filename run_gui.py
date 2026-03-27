@@ -276,19 +276,19 @@ style = tb.Style()
 
 style.configure(
     "Custom.Horizontal.TProgressbar",
-    troughcolor="#2b2b2b",
+    troughcolor="#1f1f1f",     # darker trough
     background="#4A90E2",
-    lightcolor="#6FB3F2",
-    darkcolor="#2C6FB2",
-    bordercolor="#2b2b2b",
-    thickness=12
+    lightcolor="#7EC8FF",      # brighter highlight
+    darkcolor="#1C5FA8",       # deeper shadow
+    bordercolor="#1f1f1f",
+    thickness=16               # 🔥 thicker = much nicer
 )
 
 # --- PROGRESS BAR ---
 progress = tb.Progressbar(
     content,
     mode="indeterminate",
-    style="Custom.Horizontal.TProgressbar",
+    bootstyle="info-striped",   # 🔥 adds animated stripes
     length=500
 )
 progress.pack(fill=X, pady=12)
