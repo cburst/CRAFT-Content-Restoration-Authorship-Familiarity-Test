@@ -19,19 +19,15 @@ from app.real_pipeline import run_real_pipeline
 def load_shell_env():
     try:
         result = subprocess.run(
-            ["/bin/zsh", "-lc", "printenv OPENAI_API_KEY"],
+            ["/bin/zsh", "-c", "source ~/.zshrc && printenv OPENAI_API_KEY"],
             capture_output=True,
             text=True
         )
 
-        if result.returncode != 0:
-            print("⚠️ Failed to load shell environment")
-            return
-
         key = result.stdout.strip()
         if key:
             os.environ["OPENAI_API_KEY"] = key
-            print("🔑 OPENAI_API_KEY loaded from shell")
+            print("🔑 OPENAI_API_KEY loaded from .zshrc")
 
     except Exception as e:
         print("⚠️ Failed to load shell environment:", e)
