@@ -1,65 +1,119 @@
-🧾 these python scripts can address text authorship fidelity by examining claimed authors' familiarity and ability to reconstruct text.  
-🧾 each script starts with a students.tsv file (sample included) that contains student numbers, student names, and text columns.  
-🧾 each script generates student test PDFs and answer key(s).
+# 🧠 CRAFT Test Generator  
+**Content Restoration Authorship Familiarity Tests (CRAFT)**
 
-**FINAL CRAFT test**  
-&nbsp;&nbsp;&nbsp;&nbsp;📜 hybrid-intruders-synonym.py  
-this script uses an LLM to create additional sentences in the original text sample, and the claimed author should be able to identify the impostor sentences.  
-this script also identifies the 10 rarest words in each text sample using the wikipedia word frequency list, an LLM replaces 5 of those words in the text sample with synonyms, and the claimed author should be able to find the synonyms and identify the original word choices.   
-*requires weasyprint, nltk, and a deepseek API key (compatible with other OpenAI format LLM APIs)
+This tool generates authorship verification tasks by measuring a writer’s familiarity with their own text.
 
-**GRAVEYARD - hybrid tests**  
-&nbsp;&nbsp;&nbsp;&nbsp;📜 hybrid-intruders.py  
-this script uses an LLM to create additional sentences in the original text sample, and the claimed author should be able to identify the impostor sentences.  
-this script also shuffles sentences in the original text sample, and the claimed author should be able to recorder the original sentences.   
-*requires weasyprint, nltk, and a deepseek API key (compatible with other OpenAI format LLM APIs)
+It produces:
+- 📄 Student test PDFs  
+- 📊 Answer key CSV files  
 
-&nbsp;&nbsp;&nbsp;&nbsp;📜 hybrid-assembler-replacer.py  
-this script identifies the 10 rarest words in each text sample using the wikipedia word frequency list, an LLM replaces 5 of those words in the text sample with synonyms, and the claimed author should be able to find the synonyms and identify the original word choices.   
-this script also removes a 10-word block from the original text sample, puts those words into an alphabetized word bank, and the claimed author should be able to reassemble the original block.   
-*requires weasyprint, wiki_freq.txt (included), and a deepseek API key (compatible with other OpenAI format LLM APIs)
+---
 
+## 🚀 Quick Start (Recommended)
 
-**GRAVEYARD - standalone tests**  
-&nbsp;&nbsp;&nbsp;&nbsp;📜 hybrid-assembler-replacer.py  
-this script removes a 20-word block from the original text sample, puts those words into an alphabetized word bank, and the claimed author should be able to reassemble the original block.   
-*requires weasyprint
+### 🍎 macOS (current workflow)
+1. Place the repository in:
+   ~/CRAFTtests
+2. Launch the app:
+   CRAFT.app
+3. Select your TSV file and generate tests
 
-&nbsp;&nbsp;&nbsp;&nbsp;📜 sentence-completer.py  
-this script identifies the 10 rarest words in each text sample using the wikipedia word frequency list, replaces them with blanks, and the claimed author should fill-in-the-blanks.  
-*requires weasyprint and wiki_freq.txt (included)
+> 📦 A full installer (macOS + Windows) is coming soon.
 
-&nbsp;&nbsp;&nbsp;&nbsp;📜 sentence-creator.py  
-this script identifies the 10 rarest words in each text sample using the wikipedia word frequency list, and the claimed author should be able to make a new sentence with these words.  
-*requires weasyprint and wiki_freq.txt (included)
+---
 
-&nbsp;&nbsp;&nbsp;&nbsp;📜 authorship-recognizer.py  
-this script uses an LLM to create two plausible decoy sentences for the 5 longest sentences in the original text sample, and the claimed author should be able to identify the sentence they created.  
-*requires weasyprint, nltk, and a deepseek API key (compatible with other OpenAI format LLM APIs)
+## 📄 Input Format
 
-&nbsp;&nbsp;&nbsp;&nbsp;📜 sentence-intruder.py  
-this script uses an LLM to create an additional sentence in the original text sample, and the claimed author should be able to identify the impostor sentence.   
-*requires weasyprint, nltk, and a deepseek API key (compatible with other OpenAI format LLM APIs)
+- Tab-separated file (.tsv)  
+- ❗ No header row  
+- Exactly 3 columns:
 
-&nbsp;&nbsp;&nbsp;&nbsp;📜 sentence-intruders.py  
-this script uses an LLM to create additional sentences in the original text sample, and the claimed author should be able to identify the impostor sentences.   
-*requires weasyprint, nltk, and a deepseek API key (compatible with other OpenAI format LLM APIs)
+    student_number    name    text
 
-&nbsp;&nbsp;&nbsp;&nbsp;📜 sentence-intruders.py  
-this script uses an LLM to create additional sentences in the original text sample, the sentence order is shuffled, and the claimed author should be able to identify the impostor sentences.   
-*requires weasyprint, nltk, and a deepseek API key (compatible with other OpenAI format LLM APIs)
+### Example:
+    N6MAA10816    Roy Batty    I've seen things you people wouldn't believe. Attack ships on fire off the shoulder of Orion. I watched C-beams glitter in the dark near the Tannhäuser Gate. All those moments will be lost in time, like tears in rain.
 
-&nbsp;&nbsp;&nbsp;&nbsp;📜 synonym-replacer.py  
-this script identifies the 10 rarest words in each text sample using the wikipedia word frequency list, an LLM replaces 5 of those words in the text sample with synonyms, and the claimed author should be able to find the synonyms and identify the original word choices.   
-*requires weasyprint, wiki_freq.txt (included), and a deepseek API key (compatible with other OpenAI format LLM APIs)
+---
 
-&nbsp;&nbsp;&nbsp;&nbsp;📜 summary-recognizer.py  
-this script identifiesuses an LLM to create an accurate summary of the original text, as well as two summaries with minor detail changes, and the claimed author should be able to find the accuracy summar.   
-*requires weasyprint and a deepseek API key (compatible with other OpenAI format LLM APIs)
+## 🎯 Research Motivation
+As large language models become increasingly capable of generating fluent academic text, traditional authorship verification methods based on stylistic features are becoming less reliable. The CRAFT framework addresses this challenge by shifting the focus from static text features to dynamic author knowledge. Instead of asking whether a text "looks like" a writer’s work, CRAFT evaluates whether a claimed author demonstrates familiarity with the content and structure of the text itself. By requiring authors to identify inserted sentences and recover original lexical choices, the test captures reconstruction-based evidence of authorship that is difficult to replicate without genuine involvement in the writing process.
 
-**pipeline script**  
-&nbsp;&nbsp;&nbsp;&nbsp;📜 test_pipeline.py  
-example python pipeline for organizing and merging human and machine originted pdf test files and answer keys
+## 🧪 What the Test Does
 
-&nbsp;&nbsp;&nbsp;&nbsp;📜 real_pipeline.py  
-example python pipeline for organizing and merging a single set of pdf test files and answer keys
+Each generated test includes:
+
+### ✍️ Sentence Intruders
+- Additional sentences are inserted using an LLM  
+- The author must identify sentences that do not belong  
+
+### 🔤 Synonym Replacement
+- Rare words are identified using a frequency list  
+- 5 words are replaced with synonyms  
+- The author must recover the original wording  
+
+👉 Core assumption:  
+True authors demonstrate familiarity that cannot be easily replicated.
+
+---
+
+## ⚙️ Requirements
+
+- Python 3.11  
+- OpenAI-compatible API key  
+
+### Required packages:
+- weasyprint  
+- nltk  
+- numpy  
+- scikit-learn  
+
+---
+
+## 🧠 Core Script
+
+### ✅ Final CRAFT Test
+    app/hybrid_intruder_synonym.py
+
+- Combines:
+  - sentence intruders  
+  - synonym replacement   
+
+---
+
+## 🪦 Legacy / Experimental Scripts
+
+Earlier test variants are included for reference and experimentation.
+
+### 🔀 Hybrid Tests
+- hybrid-intruders.py  
+- hybrid-assembler-replacer.py  
+
+### 🧩 Standalone Tests
+- sentence reconstruction  
+- synonym tasks  
+- authorship recognition tasks  
+
+> ⚠️ These are not part of the main GUI workflow.
+
+---
+
+## 🔧 Pipelines
+
+- real_pipeline.py → human-authored texts  
+- hard_pipeline.py → LLM-generated texts  
+
+---
+
+## 📁 Output
+
+- /output/ → final PDFs and answer keys  
+- /archive/ → logs and saved runs  
+
+---
+
+## 👤 Author
+
+Richard Rose  
+Hankuk University of Foreign Studies (HUFS)  
+
+---
