@@ -120,7 +120,7 @@ def ensure_api_key():
 
     entry_var = tk.StringVar()
 
-    tb.Entry(frame, textvariable=entry_var).pack(fill=X, pady=(0, 20))
+    tb.Entry(frame, textvariable=entry_var).pack(fill=X, pady=(0, 10))
 
     result = {"key": None}
 
