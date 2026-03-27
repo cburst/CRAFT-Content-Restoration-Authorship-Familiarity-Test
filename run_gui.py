@@ -271,15 +271,46 @@ tb.Label(content, textvariable=timer_var).pack()
 # PROGRESS
 # -----------------------------
 
-progress = tb.Progressbar(content, mode="indeterminate")
-progress.pack(fill=X, pady=10)
+# --- STYLE (run once, safe to keep here) ---
+style = tb.Style()
+style.theme_use("clam")
 
+style.configure(
+    "Custom.Horizontal.TProgressbar",
+    troughcolor="#2b2b2b",
+    background="#4A90E2",
+    lightcolor="#6FB3F2",
+    darkcolor="#2C6FB2",
+    bordercolor="#2b2b2b",
+    thickness=12
+)
+
+# --- PROGRESS BAR ---
+progress = tb.Progressbar(
+    content,
+    mode="indeterminate",
+    style="Custom.Horizontal.TProgressbar",
+    length=500
+)
+progress.pack(fill=X, pady=12)
+
+# --- TIMER ---
 timer_running = False
 
 def update_timer(start):
     if not timer_running:
         return
-    timer_var.set(f"Running... {int(time.time()-start)}s")
+
+    elapsed = int(time.time() - start)
+
+    mins = elapsed // 60
+    secs = elapsed % 60
+
+    if mins > 0:
+        timer_var.set(f"Running... {mins}m {secs}s")
+    else:
+        timer_var.set(f"Running... {secs}s")
+
     app.after(1000, update_timer, start)
 
 # -----------------------------
@@ -325,8 +356,8 @@ def run_pipeline():
             start = time.time()
             timer_running = True
 
-            safe_ui(progress.start)
-            update_timer(start)
+            safe_ui(lambda: progress.start(10))
+            safe_ui(update_timer, start)
 
             # ---------------- REAL ----------------
             if mode == "real":
