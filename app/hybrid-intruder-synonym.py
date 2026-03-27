@@ -25,9 +25,25 @@ from sklearn.metrics.pairwise import cosine_similarity
 # -----------------------------
 # FILE PATHS & CONSTANTS
 # -----------------------------
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))
-NLTK_DIR = os.path.join(BASE_DIR, "app", "data", "nltk_data")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+NLTK_DIR = os.path.join(BASE_DIR, "data", "nltk_data")
+os.makedirs(NLTK_DIR, exist_ok=True)
+
 nltk.data.path.append(NLTK_DIR)
+
+def ensure_nltk():
+    try:
+        nltk.data.find("tokenizers/punkt")
+    except LookupError:
+        nltk.download("punkt", download_dir=NLTK_DIR, quiet=True)
+
+    try:
+        nltk.data.find("tokenizers/punkt_tab")
+    except LookupError:
+        nltk.download("punkt_tab", download_dir=NLTK_DIR, quiet=True)
+
+ensure_nltk()
 
 INPUT_TSV = "students.tsv"   # student_id, name, text
 PDF_DIR = "PDFs-hybrid-synonym-intruders"
