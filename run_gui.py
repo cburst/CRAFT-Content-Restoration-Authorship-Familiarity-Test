@@ -211,7 +211,7 @@ def browse():
     if f:
         file_var.set(f)
 
-tb.Label(content, text="Input TSV").pack(anchor="w")
+tb.Label(content, text="Input TSV:").pack(anchor="w")
 
 row = tb.Frame(content)
 row.pack(fill=X, pady=5)
@@ -254,7 +254,7 @@ tb.Radiobutton(
 
 name_var = tk.StringVar()
 
-tb.Label(content, text="Test name").pack(anchor="w", pady=(10, 0))
+tb.Label(content, text="Test name (optional):").pack(anchor="w", pady=(10, 0))
 tb.Entry(content, textvariable=name_var).pack(fill=X)
 
 # -----------------------------
