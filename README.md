@@ -1,7 +1,7 @@
 # 🧠 CRAFT Test Generator  
 **Content Restoration Authorship Familiarity Tests (CRAFT)**
 
-Generates authorship verification tasks by measuring a writer’s familiarity with their own text.
+Generates authorship verification tests that measure a writer’s familiarity with their own text.
 
 Produces:
 - 📄 Test PDFs  
@@ -33,8 +33,8 @@ Dependencies (Homebrew, Python, etc.) are installed automatically.
 
 Each test includes:
 
-- ✍️ **Sentence intruders** (LLM-generated additions)  
-- 🔤 **Synonym replacements** (recover original wording)  
+- ✍️ **Sentence intruders** (identify LLM-generated added sentences)  
+- 🔤 **Synonym replacements** (identify replacements words recover original words)  
 
 👉 Core idea: real authors can reconstruct their own text.
 
