@@ -42,18 +42,43 @@ icon_path = os.path.join(BASE_DIR, "app", "data", "icon.png")
 
 app = tb.Window(themename="flatly")
 app.title("CRAFT Test Generator")
-app.minsize(540, 420)
+app.minsize(580, 420)
 
 # -----------------------------
 # ICON (STABLE)
 # -----------------------------
 
+def get_resource_path(relative_path):
+    if getattr(sys, 'frozen', False):
+        base_path = sys._MEIPASS
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
+
+
 def apply_icon():
     try:
-        app.icon_img = tk.PhotoImage(file=icon_path)
-        app.iconphoto(True, app.icon_img)
+        if os.name == "nt":
+            # Windows prefers .ico
+            ico_path = get_resource_path("app/data/icon.ico")
+            if os.path.exists(ico_path):
+                app.iconbitmap(ico_path)
+            else:
+                print("⚠️ .ico not found, falling back to PNG")
+
+                png_path = get_resource_path("app/data/icon.png")
+                app.icon_img = tk.PhotoImage(file=png_path)
+                app.iconphoto(True, app.icon_img)
+
+        else:
+            # macOS / Linux → use PNG
+            png_path = get_resource_path("app/data/icon.png")
+            app.icon_img = tk.PhotoImage(file=png_path)
+            app.iconphoto(True, app.icon_img)
+
     except Exception as e:
         print("❌ icon failed:", e)
+
 
 app.after_idle(apply_icon)
 
@@ -91,7 +116,7 @@ def ensure_api_key():
     # -----------------------------
     dialog = tb.Toplevel(app)
     dialog.title("Setup API Key")
-    dialog.geometry("500x260")
+    dialog.geometry("500x320")
     dialog.resizable(False, False)
 
     frame = tb.Frame(dialog, padding=20)
