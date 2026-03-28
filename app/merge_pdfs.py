@@ -32,7 +32,9 @@ def merge_pdfs(input_dir, output_path):
             continue  # extra safety
 
         print(f"➕ Adding {full_path}")
-        merger.append(full_path)
+
+        with open(full_path, "rb") as f:
+            merger.append(f)
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     merger.write(output_path)

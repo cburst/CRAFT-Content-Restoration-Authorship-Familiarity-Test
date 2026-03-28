@@ -3,7 +3,6 @@
 import shutil
 import subprocess
 import os
-import glob
 from datetime import datetime
 import sys
 
@@ -11,7 +10,10 @@ import sys
 # PATHS (FINAL ARCHITECTURE)
 # -------------------------------------------------------------
 
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))  # root
+if hasattr(sys, "_MEIPASS"):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 
 APP_DIR = os.path.join(BASE_DIR, "app")
 
@@ -158,15 +160,6 @@ def run_hard_pipeline(input_tsv, testname):
     log("▶ Fixing long PDFs...", log_file)
     run_script("long.py", log_file, new_pdf_dir)
 
-    long_fixed_dir = os.path.join(WORKSPACE, "long_fixed")
-
-    if os.path.exists(long_fixed_dir):
-        for f in glob.glob(os.path.join(long_fixed_dir, "*.pdf")):
-            shutil.move(f, new_pdf_dir)
-
-    shutil.rmtree(long_fixed_dir, ignore_errors=True)
-    shutil.rmtree(os.path.join(WORKSPACE, "long"), ignore_errors=True)
-
     # ---------------------------------------------------------
     # 6. Merge PDFs
     # ---------------------------------------------------------
@@ -195,7 +188,7 @@ def run_hard_pipeline(input_tsv, testname):
 
     final_key = os.path.join(
         OUTPUT_DIR,
-        f"{safe_name}-answerkey-{timestamp}.csv"
+        f"{safe_name}-answerkey-{timestamp}.tsv"
     )
 
     shutil.copy(merged_pdf, final_pdf)

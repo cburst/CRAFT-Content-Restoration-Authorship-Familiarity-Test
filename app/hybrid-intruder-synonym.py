@@ -5,6 +5,7 @@
 # IMPORTS & GLOBAL CONFIG
 # ====================================================
 
+import sys
 import csv
 import os
 import re
@@ -14,38 +15,62 @@ import html
 import requests
 import math
 from collections import Counter
+
 from rapidfuzz import fuzz
-from weasyprint import HTML
 import nltk
 from nltk.stem import SnowballStemmer
 from nltk.tokenize import sent_tokenize
+
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 
-# -----------------------------
-# FILE PATHS & CONSTANTS
-# -----------------------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# ====================================================
+# BASE DIR (PyInstaller-safe)
+# ====================================================
 
-def ensure_nltk():
-    try:
-        nltk.data.find("tokenizers/punkt")
-    except LookupError:
-        print("📦 Downloading punkt...")
-        nltk.download("punkt", quiet=True)
+if hasattr(sys, "_MEIPASS"):
+    BASE_DIR = sys._MEIPASS
+else:
+    BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 
-    try:
-        nltk.data.find("tokenizers/punkt_tab")
-    except LookupError:
-        print("📦 Downloading punkt_tab...")
-        nltk.download("punkt_tab", quiet=True)
+DATA_DIR = os.path.join(BASE_DIR, "app", "data")
 
-ensure_nltk()
+# ====================================================
+# NLTK
+# ====================================================
 
-INPUT_TSV = "students.tsv"   # student_id, name, text
+NLTK_DIR = os.path.join(DATA_DIR, "nltk_data")
+nltk.data.path.append(NLTK_DIR)
+
+# ====================================================
+# POPPLER
+# ====================================================
+
+POPPLER_BIN = os.path.join(DATA_DIR, "poppler", "bin")
+POPPLER_LIB = os.path.join(DATA_DIR, "poppler", "lib")
+
+if sys.platform == "win32":
+    os.environ["PATH"] = (
+        POPPLER_BIN + os.pathsep +
+        POPPLER_LIB + os.pathsep +
+        os.environ.get("PATH", "")
+    )
+
+# ====================================================
+# SAFE TO IMPORT WEASYPRINT AFTER PATH SETUP
+# ====================================================
+
+from weasyprint import HTML
+
+# ====================================================
+# FILE PATHS
+# ====================================================
+
+INPUT_TSV = "students.tsv"
 PDF_DIR = "PDFs-hybrid-synonym-intruders"
 ANSWER_KEY = "answer_key_hybrid_synonym_intruders.tsv"
-FREQ_FILE = os.path.join(BASE_DIR, "data", "wiki_freq.txt")
+
+FREQ_FILE = os.path.join(DATA_DIR, "wiki_freq.txt")
 
 NUM_INTRUDERS = 4            # one per quarter
 INTRUDER_SIMILARITY_BASE = 0.6	# Global intruder similarity base threshold
@@ -1936,7 +1961,6 @@ def process_tsv(input_tsv, output_tsv):
 # ====================================================
 
 if __name__ == "__main__":
-    import sys
     random.seed()
 
     if len(sys.argv) == 3:

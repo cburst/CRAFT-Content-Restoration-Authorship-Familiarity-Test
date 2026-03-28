@@ -1,10 +1,41 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+# ============================================================
+# IMPORTS
+# ============================================================
+
 import os
 import sys
 import shutil
+
 from pdf2image import convert_from_path
 from PyPDF2 import PdfReader
 from PIL import Image, ImageChops
+
+# ============================================================
+# BASE DIR (PyInstaller-safe)
+# ============================================================
+
+if hasattr(sys, "_MEIPASS"):
+    BASE_DIR = sys._MEIPASS
+else:
+    BASE_DIR = os.path.dirname(os.path.dirname(__file__))
+
+DATA_DIR = os.path.join(BASE_DIR, "app", "data")
+
+# ============================================================
+# POPPLER (required for pdf2image)
+# ============================================================
+
+POPPLER_BIN = os.path.join(DATA_DIR, "poppler", "bin")
+
+# Windows needs PATH injection
+if sys.platform == "win32":
+    os.environ["PATH"] = (
+        POPPLER_BIN + os.pathsep +
+        os.environ.get("PATH", "")
+    )
 
 # ============================================================
 # CONSTANTS
@@ -75,10 +106,25 @@ def collect_long_pdfs(src_folder, long_folder):
 # ============================================================
 
 def process_pdf(path, outpath):
-    pages = convert_from_path(path, dpi=DPI)
+    try:
+        if sys.platform == "win32":
+            pages = convert_from_path(
+                path,
+                dpi=DPI,
+                poppler_path=POPPLER_BIN
+            )
+        else:
+            pages = convert_from_path(
+                path,
+                dpi=DPI
+            )
+    except Exception as e:
+        print(f"❌ Failed to convert PDF → {path}: {e}")
+        return
 
     # Only process exactly 2-page PDFs
     if len(pages) != 2:
+        print(f"⚠️ Skipping (not 2 pages): {path}")
         return
 
     page1, page2 = pages
@@ -186,8 +232,9 @@ def process_long_pdfs(input_dir, temp_dir, output_dir):
             except Exception as e:
                 print(f"❌ Failed to replace {fname}: {e}")
 
-    # Cleanup
-    shutil.rmtree(temp_dir, ignore_errors=True)
+    # Cleanup (only if it's clearly a temp folder)
+    if os.path.basename(temp_dir).startswith("_tmp"):
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
     print("✅ Long PDF processing complete\n")
 

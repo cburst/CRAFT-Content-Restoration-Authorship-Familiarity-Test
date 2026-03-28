@@ -15,17 +15,26 @@ import webbrowser
 # FIX IMPORT PATH
 # -----------------------------
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if hasattr(sys, "_MEIPASS"):
+    BASE_DIR = sys._MEIPASS
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 
 from app.hard_pipeline import run_hard_pipeline
 from app.real_pipeline import run_real_pipeline
 
-os.environ["PATH"] = (
-    "/opt/homebrew/bin:/opt/homebrew/sbin:"
-    "/usr/local/bin:"
-    + os.environ.get("PATH", "")
-)
+if os.name == "nt":
+    poppler_path = os.path.join(BASE_DIR, "data", "poppler", "bin")
+    os.environ["PATH"] = poppler_path + ";" + os.environ.get("PATH", "")
+elif sys.platform == "darwin":
+    os.environ["PATH"] = (
+        "/opt/homebrew/bin:/opt/homebrew/sbin:"
+        "/usr/local/bin:"
+        + os.environ.get("PATH", "")
+    )
+
+icon_path = os.path.join(BASE_DIR, "app", "data", "icon.png")
 
 # -----------------------------
 # APP SETUP
@@ -38,8 +47,6 @@ app.minsize(540, 420)
 # -----------------------------
 # ICON (STABLE)
 # -----------------------------
-
-icon_path = os.path.expanduser("~/CRAFTtests/app/data/icon.png")
 
 def apply_icon():
     try:
@@ -79,12 +86,10 @@ def ensure_api_key():
         except:
             pass
 
-    import webbrowser
-
     # -----------------------------
     # CUSTOM DIALOG
     # -----------------------------
-    dialog = tb.Toplevel()
+    dialog = tb.Toplevel(app)
     dialog.title("Setup API Key")
     dialog.geometry("500x260")
     dialog.resizable(False, False)
@@ -126,9 +131,6 @@ def ensure_api_key():
 
     def submit():
         result["key"] = entry_var.get()
-        dialog.destroy()
-
-    def cancel():
         dialog.destroy()
 
     btn_row = tb.Frame(frame)

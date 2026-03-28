@@ -13,14 +13,17 @@ from nltk.tokenize import sent_tokenize, word_tokenize
 
 def ensure_nltk():
     """
-    Ensure punkt tokenizer is available.
+    Ensure required NLTK tokenizers are available.
     Works in packaged environments.
     """
-    try:
-        nltk.data.find("tokenizers/punkt")
-    except LookupError:
-        print("⬇️ Downloading NLTK punkt tokenizer...")
-        nltk.download("punkt", quiet=True)
+    resources = ["punkt", "punkt_tab"]
+
+    for res in resources:
+        try:
+            nltk.data.find(f"tokenizers/{res}")
+        except LookupError:
+            print(f"⬇️ Downloading {res}...")
+            nltk.download(res, quiet=True)
 
 ensure_nltk()
 
