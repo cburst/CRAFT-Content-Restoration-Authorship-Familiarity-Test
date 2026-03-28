@@ -1,16 +1,27 @@
 #!/usr/bin/env python3
 
+import os
+import sys
+import io
+
+# 🔥 FIX pythonw stdout/stderr BEFORE anything else
+if sys.stdout is None:
+    sys.stdout = io.StringIO()
+
+if sys.stderr is None:
+    sys.stderr = io.StringIO()
+
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 import tkinter as tk
 from tkinter import filedialog
 import threading
-import os
-import sys
 import time
 import subprocess
 import webbrowser
+import multiprocessing
 
+is_running = False
 # -----------------------------
 # FIX IMPORT PATH
 # -----------------------------
@@ -34,8 +45,6 @@ elif sys.platform == "darwin":
         + os.environ.get("PATH", "")
     )
 
-icon_path = os.path.join(BASE_DIR, "app", "data", "icon.png")
-
 # -----------------------------
 # APP SETUP
 # -----------------------------
@@ -48,39 +57,49 @@ app.minsize(580, 420)
 # ICON (STABLE)
 # -----------------------------
 
-def get_resource_path(relative_path):
-    if getattr(sys, 'frozen', False):
-        base_path = sys._MEIPASS
-    else:
-        base_path = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base_path, relative_path)
-
-
 def apply_icon():
     try:
-        if os.name == "nt":
-            # Windows prefers .ico
-            ico_path = get_resource_path("app/data/icon.ico")
-            if os.path.exists(ico_path):
-                app.iconbitmap(ico_path)
-            else:
-                print("⚠️ .ico not found, falling back to PNG")
-
-                png_path = get_resource_path("app/data/icon.png")
-                app.icon_img = tk.PhotoImage(file=png_path)
-                app.iconphoto(True, app.icon_img)
-
+        # --------------------------------------------------
+        # Resolve base directory (robust)
+        # --------------------------------------------------
+        if getattr(sys, "frozen", False):
+            base = os.path.dirname(sys.executable)   # 🔥 more reliable than _MEIPASS
         else:
-            # macOS / Linux → use PNG
-            png_path = get_resource_path("app/data/icon.png")
-            app.icon_img = tk.PhotoImage(file=png_path)
-            app.iconphoto(True, app.icon_img)
+            base = os.path.dirname(os.path.abspath(__file__))
+
+        data_dir = os.path.join(base, "app", "data")
+
+        ico_path = os.path.normpath(os.path.join(data_dir, "icon.ico"))
+        png_path = os.path.normpath(os.path.join(data_dir, "icon.png"))
+
+        # --------------------------------------------------
+        # Windows (.ico)
+        # --------------------------------------------------
+        if os.name == "nt" and os.path.exists(ico_path):
+            try:
+                app.iconbitmap(ico_path)
+            except Exception as e:
+                print("⚠️ iconbitmap failed:", e)
+
+        # --------------------------------------------------
+        # Cross-platform fallback (.png)
+        # --------------------------------------------------
+        if os.path.exists(png_path):
+            try:
+                img = tk.PhotoImage(file=png_path)
+                app.iconphoto(True, img)
+
+                # 🔥 prevent garbage collection (CRITICAL)
+                app._icon_ref = img
+            except Exception as e:
+                print("⚠️ iconphoto failed:", e)
 
     except Exception as e:
-        print("❌ icon failed:", e)
+        print("❌ icon setup failed:", e)
 
 
-app.after_idle(apply_icon)
+# 🔥 important: after window is fully initialized
+app.after(100, apply_icon)
 
 # -----------------------------
 # SAFE UI HELPER
@@ -222,7 +241,7 @@ info_label = tb.Label(
     text=info_text,
     justify=LEFT,
     anchor="w",
-    wraplength=540
+    wraplength=580
 )
 info_label.pack(fill=X, pady=(0, 0))
 
@@ -290,7 +309,7 @@ link_label = tb.Label(
     foreground="#4A90E2",
     cursor="hand2",
     anchor="w",
-    wraplength=540
+    wraplength=580
 )
 link_label.pack(anchor="w", pady=(0, 10))
 
@@ -440,7 +459,10 @@ def open_file(path):
 
 def run_pipeline():
 
-    global timer_running
+    global timer_running, is_running
+
+    if is_running:
+        return
 
     if not ensure_api_key():
         return
@@ -453,17 +475,25 @@ def run_pipeline():
         status_var.set("❌ Select a file")
         return
 
-    safe_ui(status_var.set, "Running...")
-    safe_ui(timer_var.set, "")
+    # 🔥 lock immediately
+    is_running = True
+
+    # 🔥 update UI synchronously (NOT safe_ui)
+    status_var.set("Running...")
+    timer_var.set("")
+    run_button.config(state="disabled")
+    progress.start(10)
+
+    app.update_idletasks()  # 🔥 CRITICAL
 
     def task():
-        global timer_running
+        global timer_running, is_running
 
         try:
             start = time.time()
             timer_running = True
 
-            safe_ui(lambda: progress.start(10))
+            # start timer loop on main thread
             safe_ui(update_timer, start)
 
             # ---------------- REAL ----------------
@@ -488,32 +518,42 @@ def run_pipeline():
                 hard_pdf, *_ = run_hard_pipeline(f, name + "-hard")
                 safe_ui(open_file, hard_pdf)
 
-            # ---------------- DONE ----------------
-            timer_running = False
-            safe_ui(progress.stop)
             safe_ui(status_var.set, "✔ Done")
 
         except Exception as e:
-            timer_running = False
-            safe_ui(progress.stop)
             safe_ui(status_var.set, f"❌ {e}")
 
+        finally:
+            timer_running = False
+
+            def cleanup():
+                global is_running
+                progress.stop()
+                run_button.config(state="normal")
+                is_running = False
+
+            safe_ui(cleanup)
+
+    # 🔥 start thread AFTER UI is fully updated
     threading.Thread(target=task, daemon=True).start()
 
 # -----------------------------
 # BUTTON
 # -----------------------------
 
-tb.Button(
+run_button = tb.Button(
     bottom_bar,
     text="Run",
     command=run_pipeline,
     bootstyle="success",
     width=20
-).pack(pady=5)
+)
+run_button.pack(pady=5)
 
 # -----------------------------
 # START
 # -----------------------------
 
-app.mainloop()
+if __name__ == "__main__":
+    multiprocessing.freeze_support()
+    app.mainloop()

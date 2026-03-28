@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 
 import shutil
-import subprocess
 import os
 from datetime import datetime
 import sys
+import importlib.util
+import traceback
+import io
+from contextlib import redirect_stdout, redirect_stderr
 
 # -------------------------------------------------------------
 # PATHS (FINAL ARCHITECTURE)
@@ -35,37 +38,68 @@ def setup_log(mode):
     os.makedirs(WORKSPACE, exist_ok=True)
     return timestamp, os.path.join(WORKSPACE, f"{timestamp}-{mode}.log")
 
-
 def log(msg, log_file):
     print(msg, flush=True)
     with open(log_file, "a", encoding="utf-8") as f:
         f.write(msg + "\n")
 
-
 def run_script(script, log_file, *args):
+
     script_path = os.path.join(APP_DIR, script)
 
-    cmd = [PY, script_path] + list(args)
-    log(" ".join(cmd), log_file)
+    # --- emulate old subprocess-style command logging ---
+    cmd_str = f"{os.path.basename(script)} {' '.join(args)}"
+    log(cmd_str, log_file)
 
-    with open(log_file, "a", encoding="utf-8") as logfile:
-        process = subprocess.Popen(
-            cmd,
-            cwd=WORKSPACE,  # 🔥 everything runs inside workspace
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1
-        )
+    old_argv = sys.argv.copy()
+    old_cwd = os.getcwd()
 
-        for line in process.stdout:
-            print(line, end="", flush=True)
-            logfile.write(line)
+    try:
+        # 🔥 match subprocess cwd behavior
+        os.chdir(WORKSPACE)
 
-        process.wait()
+        # 🔥 simulate CLI args
+        sys.argv = [script_path] + list(args)
 
-        if process.returncode != 0:
-            raise subprocess.CalledProcessError(process.returncode, cmd)
+        # 🔥 tee output (console + file)
+        class Tee(io.TextIOBase):
+            def __init__(self, logfile):
+                self.logfile = logfile
+
+            def write(self, s):
+                sys.__stdout__.write(s)
+                sys.__stdout__.flush()
+
+                self.logfile.write(s)
+                self.logfile.flush()  # 🔥 important
+                return len(s)
+
+            def flush(self):
+                self.logfile.flush()
+
+        with open(log_file, "a", encoding="utf-8") as logfile:
+            tee = Tee(logfile)
+
+            with redirect_stdout(tee), redirect_stderr(tee):
+
+                spec = importlib.util.spec_from_file_location("__main__", script_path)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+
+                # 🔥 run main if present
+                if hasattr(module, "main"):
+                    module.main()
+
+        log(f"✔ Finished {script}", log_file)
+
+    except Exception as e:
+        log(f"❌ Error in {script}: {e}", log_file)
+        log(traceback.format_exc(), log_file)
+        raise
+
+    finally:
+        sys.argv = old_argv
+        os.chdir(old_cwd)
 
 
 # -------------------------------------------------------------
