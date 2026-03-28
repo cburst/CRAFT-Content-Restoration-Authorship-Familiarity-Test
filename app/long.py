@@ -17,18 +17,17 @@ from PIL import Image, ImageChops
 # BASE DIR (PyInstaller-safe)
 # ============================================================
 
-if hasattr(sys, "_MEIPASS"):
-    BASE_DIR = sys._MEIPASS
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)
 else:
     BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 
 DATA_DIR = os.path.join(BASE_DIR, "app", "data")
-
 # ============================================================
 # POPPLER (required for pdf2image)
 # ============================================================
 
-POPPLER_BIN = os.path.join(DATA_DIR, "poppler", "bin")
+POPPLER_BIN = os.path.join(DATA_DIR, "poppler", "Library", "bin")
 
 # Windows needs PATH injection
 if sys.platform == "win32":

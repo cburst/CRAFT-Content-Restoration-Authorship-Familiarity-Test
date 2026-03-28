@@ -28,8 +28,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 # BASE DIR (PyInstaller-safe)
 # ====================================================
 
-if hasattr(sys, "_MEIPASS"):
-    BASE_DIR = sys._MEIPASS
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)
 else:
     BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 
@@ -39,15 +39,20 @@ DATA_DIR = os.path.join(BASE_DIR, "app", "data")
 # NLTK
 # ====================================================
 
-NLTK_DIR = os.path.join(DATA_DIR, "nltk_data")
-nltk.data.path.append(NLTK_DIR)
+required = ["punkt", "punkt_tab"]
+
+for pkg in required:
+    try:
+        nltk.data.find(f"tokenizers/{pkg}")
+    except LookupError:
+        nltk.download(pkg, quiet=True)
 
 # ====================================================
 # POPPLER
 # ====================================================
 
-POPPLER_BIN = os.path.join(DATA_DIR, "poppler", "bin")
-POPPLER_LIB = os.path.join(DATA_DIR, "poppler", "lib")
+POPPLER_BIN = os.path.join(DATA_DIR, "poppler", "Library", "bin")
+POPPLER_LIB = os.path.join(DATA_DIR, "poppler", "Library", "lib")
 
 if sys.platform == "win32":
     os.environ["PATH"] = (
