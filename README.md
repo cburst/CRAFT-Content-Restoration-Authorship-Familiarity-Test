@@ -17,7 +17,6 @@ If prompted, click **More info → Run anyway**.
 
 ### 🍎 macOS
 Download [CRAFTinstaller.zip](https://github.com/cburst/CRAFT-Content-Restoration-Authorship-Familiarity-Test/releases/latest/download/CRAFTinstaller.zip), unzip, and run the installer.  
-Dependencies (Homebrew, Python, etc.) are installed automatically.
 
 ---
 
