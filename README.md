@@ -12,11 +12,11 @@ Produces:
 ## 🚀 Quick Start
 
 ### 🪟 Windows
-Run **CRAFT-Installer.exe** and follow the setup.  
+Download and run [CRAFT-Installer.exe](https://github.com/cburst/CRAFT-Content-Restoration-Authorship-Familiarity-Test/releases/latest/download/CRAFT-Installer.exe).  
 If prompted, click **More info → Run anyway**.
 
 ### 🍎 macOS
-Download **CRAFTinstaller.zip**, unzip, and run the installer.  
+Download [CRAFTinstaller.zip](https://github.com/cburst/CRAFT-Content-Restoration-Authorship-Familiarity-Test/releases/latest/download/CRAFTinstaller.zip), unzip, and run the installer.  
 Dependencies (Homebrew, Python, etc.) are installed automatically.
 
 ---
