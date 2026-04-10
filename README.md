@@ -1,4 +1,5 @@
 ![License](https://img.shields.io/badge/license-Source--Available--Non--Production-blue)
+![Python](https://img.shields.io/badge/python-3.11+-blue)
 
 # 🧠 CRAFT Test Generator  
 **Content Restoration Authorship Familiarity Tests (CRAFT)**
