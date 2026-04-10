@@ -56,3 +56,6 @@ You will be prompted for an **OpenAI API key**.
 
 Richard Rose  
 Hankuk University of Foreign Studies (HUFS)
+
+**License:** Source-Available (Non-Production Use Only)  
+Free for personal, educational, and research use; commercial (production) use requires a separate license.
