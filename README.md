@@ -1,3 +1,6 @@
+![License](https://img.shields.io/badge/license-Source--Available--Non--Production-blue)
+![Python](https://img.shields.io/badge/python-3.11+-blue)
+
 # 🧠 CRAFT Test Generator  
 **Content Restoration Authorship Familiarity Tests (CRAFT)**
 
@@ -56,3 +59,6 @@ You will be prompted for an **OpenAI API key**.
 
 Richard Rose  
 Hankuk University of Foreign Studies (HUFS)
+
+**License:** Source-Available (Non-Production Use Only)  
+Free for personal, educational, and research use; commercial (production) use requires a separate license.
