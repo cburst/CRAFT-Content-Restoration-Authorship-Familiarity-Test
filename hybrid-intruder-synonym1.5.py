@@ -648,7 +648,7 @@ def compute_detection_rate(flagged_numbers, true_intruder_numbers):
 # ====================================================
 # SYNONYM REPLACEMENT LOGIC
 # ====================================================
-def get_jargon_to_avoid(text, freq_ranks=None, cutoff=10000):
+def get_jargon_to_avoid(text, freq_ranks=None, cutoff=40000):
     """
     Jargon = words that should NOT be replaced.
 
