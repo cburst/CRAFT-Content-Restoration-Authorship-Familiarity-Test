@@ -650,28 +650,22 @@ def compute_detection_rate(flagged_numbers, true_intruder_numbers):
 # ====================================================
 def get_jargon_to_avoid(text, freq_ranks=None, cutoff=7500):
     """
-    Jargon = words that should NOT be replaced.
+    Identify words that should NOT be replaced (jargon).
 
     Logic:
       1) Frequency gate (primary):
          - NOT in freq list OR rank > cutoff → jargon
-      2) LLM veto (secondary, only for frequent words):
-         - From freq ≤ cutoff, LLM flags non-substitutable technical terms
+      2) LLM veto (secondary):
+         - Only applied to borderline words (4000–7500)
+         - Uses domain-specific prompt (education + engineering)
     """
 
     import re
+    from collections import Counter
 
     tokens = tokenize_words_lower(text)
     vocab = set(tokens)
-
-    GENERIC_ACADEMIC = {
-        "analysis","system","method","process","result","data",
-        "model","approach","performance","function","effect",
-        "structure","information","technology","development",
-        "research","study","problem","solution","example",
-        "learning","network","design","application","task",
-        "context","factor","role","type","level","form"
-    }
+    counts = Counter(tokens)
 
     # ----------------------------
     # 1) PRIMARY: frequency-based jargon
@@ -684,21 +678,19 @@ def get_jargon_to_avoid(text, freq_ranks=None, cutoff=7500):
 
         freq = freq_ranks.get(w) if freq_ranks else None
 
-        # not in list OR too rare → jargon
+        # rare or unknown → jargon
         if freq is None or freq > cutoff:
             freq_jargon.add(w)
 
     # ----------------------------
-    # 2) SECONDARY: LLM veto on frequent words
+    # 2) SECONDARY: LLM veto (tight scope)
     # ----------------------------
-    # candidates = words that WOULD be replaceable by freq
     llm_candidates = [
         w for w in vocab
         if w not in STOPWORDS
-        and w not in GENERIC_ACADEMIC
         and freq_ranks
         and freq_ranks.get(w) is not None
-        and freq_ranks[w] <= cutoff
+        and 4000 <= freq_ranks[w] <= cutoff   # 🔥 borderline only
         and len(w) >= 6
     ]
 
@@ -707,28 +699,73 @@ def get_jargon_to_avoid(text, freq_ranks=None, cutoff=7500):
     if llm_candidates:
         system_prompt = (
             "You are identifying words that MUST NOT be replaced in a lexical substitution task.\n\n"
-            "Only include words that would sound WRONG or unnatural if replaced.\n\n"
-            "STRICT:\n"
-            "- Include only true technical terms\n"
-            "- Exclude general academic words\n"
-            "- If unsure, exclude\n\n"
+
+            "A word should ONLY be included if replacing it would sound WRONG or unnatural.\n\n"
+
+            "These texts are from EDUCATION and ENGINEERING contexts.\n\n"
+
+            "GOOD examples (DO include — true jargon):\n"
+            "- piezoresistive\n"
+            "- electromyography\n"
+            "- hysteresis\n"
+            "- thermoplastic\n"
+            "- thiol\n"
+            "- intermolecular\n"
+            "- deconvolution\n"
+            "- actuator\n"
+            "- trapezius\n"
+            "- typologies\n"
+            "- comparator\n"
+            "- competence\n"
+            "- proficiency\n"
+            "- grammatical (in linguistic theory)\n\n"
+
+            "BAD examples (DO NOT include — replaceable words):\n"
+            "- analyze\n"
+            "- system\n"
+            "- process\n"
+            "- result\n"
+            "- problem\n"
+            "- enjoy\n"
+            "- reject\n"
+            "- important\n"
+            "- different\n"
+            "- situation\n"
+            "- topic\n"
+            "- people\n"
+            "- pandemic\n"
+            "- peaceful\n\n"
+
+            "Rules:\n"
+            "- Include ONLY specialized technical terms used in THIS text\n"
+            "- Exclude general academic vocabulary\n"
+            "- Exclude everyday words\n"
+            "- Prefer nouns or fixed technical adjectives\n"
+            "- If unsure, DO NOT include the word\n\n"
+
             "Output:\n"
-            "- lowercase\n"
+            "- lowercase only\n"
             "- one word per line\n"
-            "- no explanation\n"
+            "- no explanation"
         )
 
-        candidate_text = "\n".join(llm_candidates[:50])  # cap for safety
-
         try:
-            raw = llm_chat(system_prompt, candidate_text, temperature=0.1, max_tokens=80)
+            raw = llm_chat(system_prompt, text, temperature=0.1, max_tokens=120)
 
             for line in raw.splitlines():
                 w = line.strip().lower()
                 w = re.sub(r"[^a-z]", "", w)
 
-                if w in vocab:
-                    llm_jargon.add(w)
+                # must actually exist in the text
+                if w not in vocab:
+                    continue
+
+                # reject obvious non-jargon (safety net)
+                freq = freq_ranks.get(w) if freq_ranks else None
+                if freq is not None and freq < 3000:
+                    continue
+
+                llm_jargon.add(w)
 
         except Exception as e:
             print(f"⚠️ LLM veto failed: {e}")
