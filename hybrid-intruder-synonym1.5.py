@@ -648,48 +648,22 @@ def compute_detection_rate(flagged_numbers, true_intruder_numbers):
 # ====================================================
 # SYNONYM REPLACEMENT LOGIC
 # ====================================================
-def get_jargon_to_avoid(text, freq_ranks=None):
+def get_jargon_to_avoid(text, freq_ranks=None, cutoff=7500):
     """
-    Identify domain-specific words that should NOT be replaced.
+    Jargon = words that should NOT be replaced.
 
-    Updated behavior:
-      - Strict jargon definition (non-substitutable terms only)
-      - Frequency-based filtering (core signal)
-      - Expanded academic-word blacklist
-      - LLM + deterministic fallback (robust)
+    Logic:
+      1) Frequency gate (primary):
+         - NOT in freq list OR rank > cutoff → jargon
+      2) LLM veto (secondary, only for frequent words):
+         - From freq ≤ cutoff, LLM flags non-substitutable technical terms
     """
 
     import re
 
-    # ----------------------------
-    # STRICT PROMPT
-    # ----------------------------
-    system_prompt = (
-        "You are identifying words that MUST NOT be replaced in a lexical substitution task.\n\n"
-        "Only include words that would sound WRONG or unnatural if replaced with a synonym.\n\n"
-        "STRICT RULES:\n"
-        "- Include ONLY specialized technical terms (e.g., 'blockchain', 'enzyme', 'photosynthesis')\n"
-        "- EXCLUDE general academic words (e.g., 'system', 'process', 'model', 'result', 'data')\n"
-        "- EXCLUDE words that have common synonyms\n"
-        "- If unsure, DO NOT include the word\n\n"
-        "Output:\n"
-        "- lowercase only\n"
-        "- one word per line\n"
-        "- max 10 words"
-    )
+    tokens = tokenize_words_lower(text)
+    vocab = set(tokens)
 
-    # ----------------------------
-    # LLM CALL
-    # ----------------------------
-    try:
-        raw = llm_chat(system_prompt, text, temperature=0.1, max_tokens=80)
-    except Exception as e:
-        print(f"⚠️ Jargon detection failed (API error): {e}")
-        return set()
-
-    # ----------------------------
-    # FILTER SETUP
-    # ----------------------------
     GENERIC_ACADEMIC = {
         "analysis","system","method","process","result","data",
         "model","approach","performance","function","effect",
@@ -699,80 +673,74 @@ def get_jargon_to_avoid(text, freq_ranks=None):
         "context","factor","role","type","level","form"
     }
 
-    words = set()
-
     # ----------------------------
-    # HARD FILTERING
+    # 1) PRIMARY: frequency-based jargon
     # ----------------------------
-    for line in raw.splitlines():
-        w = line.strip().lower()
+    freq_jargon = set()
 
-        if not re.fullmatch(r"[a-z]{6,}", w):
-            continue
-
+    for w in vocab:
         if w in STOPWORDS:
             continue
 
-        if w in GENERIC_ACADEMIC:
-            continue
+        freq = freq_ranks.get(w) if freq_ranks else None
 
-        # frequency filter (core signal)
-        if freq_ranks:
-            if freq_ranks.get(w, 0) < 5000:
-                continue
-
-        words.add(w)
+        # not in list OR too rare → jargon
+        if freq is None or freq > cutoff:
+            freq_jargon.add(w)
 
     # ----------------------------
-    # FALLBACK (LLM OVER-TRIGGER)
+    # 2) SECONDARY: LLM veto on frequent words
     # ----------------------------
-    if len(words) > 15:
-        print("⚠️ LLM over-trigger detected — switching to heuristic fallback")
+    # candidates = words that WOULD be replaceable by freq
+    llm_candidates = [
+        w for w in vocab
+        if w not in STOPWORDS
+        and w not in GENERIC_ACADEMIC
+        and freq_ranks
+        and freq_ranks.get(w) is not None
+        and freq_ranks[w] <= cutoff
+        and len(w) >= 6
+    ]
 
-        fallback = {
-            w for w in tokenize_words_lower(text)
-            if len(w) >= 6
-            and w not in STOPWORDS
-            and w not in GENERIC_ACADEMIC
-            and (not freq_ranks or freq_ranks.get(w, 0) >= 8000)
-        }
+    llm_jargon = set()
 
-        print(f"🧠 Fallback jargon (avoid): {sorted(fallback)}")
-        return fallback
-
-    if not words:
-        return set()
-
-    # ----------------------------
-    # ADAPTIVE SIZE CONTROL
-    # ----------------------------
-    tokens = tokenize_words_lower(text)
-    content_words = [t for t in tokens if t not in STOPWORDS]
-    unique_content = len(set(content_words))
-
-    adaptive_cap = max(4, min(10, int(unique_content * 0.15)))
-
-    # ----------------------------
-    # RANKING (RARITY ONLY)
-    # ----------------------------
-    if freq_ranks:
-        words = sorted(
-            words,
-            key=lambda w: freq_ranks.get(w, 10**9),
-            reverse=True
+    if llm_candidates:
+        system_prompt = (
+            "You are identifying words that MUST NOT be replaced in a lexical substitution task.\n\n"
+            "Only include words that would sound WRONG or unnatural if replaced.\n\n"
+            "STRICT:\n"
+            "- Include only true technical terms\n"
+            "- Exclude general academic words\n"
+            "- If unsure, exclude\n\n"
+            "Output:\n"
+            "- lowercase\n"
+            "- one word per line\n"
+            "- no explanation\n"
         )
-    else:
-        words = list(words)
 
-    if len(words) > adaptive_cap:
-        print(f"⚠️ Jargon list too large ({len(words)}) — trimming to {adaptive_cap}")
-        words = words[:adaptive_cap]
+        candidate_text = "\n".join(llm_candidates[:50])  # cap for safety
 
-    final_words = set(words)
+        try:
+            raw = llm_chat(system_prompt, candidate_text, temperature=0.1, max_tokens=80)
 
-    print(f"🧠 Jargon detected (avoid): {sorted(final_words)}")
+            for line in raw.splitlines():
+                w = line.strip().lower()
+                w = re.sub(r"[^a-z]", "", w)
 
-    return final_words
+                if w in vocab:
+                    llm_jargon.add(w)
+
+        except Exception as e:
+            print(f"⚠️ LLM veto failed: {e}")
+
+    # ----------------------------
+    # COMBINE
+    # ----------------------------
+    final = freq_jargon | llm_jargon
+
+    print(f"🧠 Jargon detected (avoid): {sorted(final)}")
+
+    return final
 
 
 def find_obscure_words(
